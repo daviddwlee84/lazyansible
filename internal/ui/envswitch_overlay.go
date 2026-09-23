@@ -9,7 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/kocierik/lazyansible/internal/inventory"
+	"github.com/daviddwlee84/lazyansible/internal/inventory"
 )
 
 // EnvSwitchMsg is sent when the user picks a new inventory.
@@ -70,6 +70,10 @@ func (o *EnvSwitchOverlay) Update(msg tea.Msg) tea.Cmd {
 		return nil
 	}
 	switch key.String() {
+	case "g", "home":
+		o.cursor = 0
+	case "G", "end":
+		o.cursor = max(0, len(o.entries)-1)
 	case "j", "down":
 		if o.cursor < len(o.entries)-1 {
 			o.cursor++
@@ -89,8 +93,8 @@ func (o *EnvSwitchOverlay) Update(msg tea.Msg) tea.Cmd {
 }
 
 func (o *EnvSwitchOverlay) View() string {
-	boxW := min(o.width-8, 70)
-	boxH := min(o.height-6, 20)
+	boxW := max(1, min(o.width-8, 70))
+	boxH := max(1, min(o.height-6, 20))
 
 	var sb strings.Builder
 	sb.WriteString(overlayTitleStyle.Render("Switch Environment") + "\n\n")
@@ -101,7 +105,7 @@ func (o *EnvSwitchOverlay) View() string {
 		return overlayBoxStyle.Width(boxW).Height(boxH).Render(sb.String())
 	}
 
-	contentH := boxH - 7
+	contentH := max(1, boxH-7)
 	start := 0
 	if o.cursor >= contentH {
 		start = o.cursor - contentH + 1
@@ -122,7 +126,7 @@ func (o *EnvSwitchOverlay) View() string {
 		}
 
 		counts := fmt.Sprintf("%2d hosts  %2d groups", e.HostCount, e.GroupCount)
-		nameW := boxW - len(counts) - 8
+		nameW := max(1, boxW-len(counts)-8)
 		name := truncateStr(e.Name, nameW)
 		line := dot + fmt.Sprintf("%-*s  %s", nameW, name, counts)
 

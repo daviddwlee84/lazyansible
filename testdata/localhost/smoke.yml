@@ -1,0 +1,22 @@
+---
+- name: Localhost output and callback smoke test
+  hosts: local
+  gather_facts: false
+  tasks:
+    - name: Report success without changing the machine
+      ansible.builtin.debug:
+        msg: lazyansible smoke success
+    - name: Simulate a changed result without changing the machine
+      ansible.builtin.debug:
+        msg: lazyansible smoke changed
+      changed_when: true
+    - name: Exercise skipped loop items
+      ansible.builtin.debug:
+        msg: "item {{ item }}"
+      loop: [1, 2]
+      when: item == 1
+    - name: Exercise an ignored failure without changing the machine
+      ansible.builtin.debug:
+        msg: lazyansible smoke expected failure
+      failed_when: true
+      ignore_errors: true

@@ -1,47 +1,68 @@
-// Package config loads lazyansible settings from ~/.lazyansible/config.yml
-// (or a path given by the LAZYANSIBLE_CONFIG env var).
-// Missing file → silent no-op; all fields are optional.
+// Package config loads typed preferences without creating files on reads.
 package config
 
 import (
+	"bytes"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
+	"github.com/daviddwlee84/lazyansible/internal/paths"
 	"gopkg.in/yaml.v3"
 )
 
-// Config holds user-defined defaults.
-type Config struct {
-	// Inventory is the default inventory file path (overridden by -i flag).
-	Inventory string `yaml:"inventory"`
-	// PlaybookDir is the default playbook search directory (overridden by -d flag).
-	PlaybookDir string `yaml:"playbook_dir"`
-	// NoMouse disables mouse capture on startup.
-	NoMouse bool `yaml:"no_mouse"`
-	// NotifyOnFinish sends a desktop notification when a run completes.
-	NotifyOnFinish bool `yaml:"notify_on_finish"`
-	// DefaultCheckMode starts the tool with --check pre-enabled.
-	DefaultCheckMode bool `yaml:"default_check_mode"`
-	// DefaultDiffMode starts the tool with --diff pre-enabled.
-	DefaultDiffMode bool `yaml:"default_diff_mode"`
+type Runtime struct {
+	Executable   string `yaml:"executable,omitempty" json:"executable,omitempty"`
+	UVExecutable string `yaml:"uv_executable,omitempty" json:"uv_executable,omitempty"`
+	Package      string `yaml:"package,omitempty" json:"package,omitempty"`
 }
 
-// DefaultPath returns the default config file location.
+type Config struct {
+	Inventory        string  `yaml:"inventory,omitempty" json:"inventory,omitempty"`
+	PlaybookDir      string  `yaml:"playbook_dir,omitempty" json:"playbook_dir,omitempty"`
+	NoMouse          bool    `yaml:"no_mouse" json:"no_mouse"`
+	NotifyOnFinish   bool    `yaml:"notify_on_finish" json:"notify_on_finish"`
+	DefaultCheckMode bool    `yaml:"default_check_mode" json:"default_check_mode"`
+	DefaultDiffMode  bool    `yaml:"default_diff_mode" json:"default_diff_mode"`
+	CheckUpdates     bool    `yaml:"check_updates" json:"check_updates"`
+	Runtime          Runtime `yaml:"runtime,omitempty" json:"runtime"`
+}
+
+func Defaults() Config { return Config{CheckUpdates: true} }
+
+// DefaultPath is the destination for new preferences, never a legacy fallback.
 func DefaultPath() string {
 	if p := os.Getenv("LAZYANSIBLE_CONFIG"); p != "" {
 		return p
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".lazyansible", "config.yml")
+	return paths.Join(paths.ConfigDir(), "config.yml")
 }
 
-// Load reads and parses the config file at path.
-// Returns an empty Config (all zero values) if the file does not exist.
+// ResolvePath selects a read path; explicit and environment paths never fall back.
+func ResolvePath(explicit string) (string, bool) {
+	if explicit != "" {
+		return explicit, false
+	}
+	p := DefaultPath()
+	if os.Getenv("LAZYANSIBLE_CONFIG") != "" {
+		return p, false
+	}
+	if _, err := os.Stat(p); !os.IsNotExist(err) {
+		return p, false
+	}
+	legacy := paths.Join(paths.LegacyDir(), "config.yml")
+	if _, err := os.Stat(legacy); err == nil {
+		return legacy, true
+	}
+	return p, false
+}
+
 func Load(path string) (Config, error) {
-	var cfg Config
+	cfg := Defaults()
+	if path == "" {
+		return cfg, fmt.Errorf("cannot locate config: HOME is unset")
+	}
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return cfg, nil
@@ -49,38 +70,54 @@ func Load(path string) (Config, error) {
 	if err != nil {
 		return cfg, err
 	}
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return cfg, err
+	d := yaml.NewDecoder(bytes.NewReader(data))
+	d.KnownFields(true)
+	if err := d.Decode(&cfg); err != nil && err != io.EOF {
+		return cfg, fmt.Errorf("config %s: %w", path, err)
+	}
+	var extra any
+	if err := d.Decode(&extra); err != io.EOF {
+		return cfg, fmt.Errorf("config %s: expected one YAML document", path)
+	}
+	if cfg.Runtime.Package != "" && cfg.Runtime.Package != "ansible-core" && cfg.Runtime.Package != "ansible" {
+		return cfg, fmt.Errorf("config %s: runtime.package must be ansible-core or ansible", path)
 	}
 	return cfg, nil
 }
 
-// WriteExample writes an annotated example config to path (creates parent dirs).
+const Example = `# lazyansible preferences. Explicit CLI flags override these values.
+# macOS/Linux: $XDG_CONFIG_HOME/lazyansible/config.yml (default ~/.config).
+# Relative project paths are resolved against the selected --chdir.
+# inventory: ./inventories/localhost.ini
+# playbook_dir: ./playbooks
+no_mouse: false
+notify_on_finish: false
+default_check_mode: false
+default_diff_mode: false
+check_updates: true
+# The existing uv tool owns its version and Python constraints.
+# runtime:
+#   executable: /path/to/ansible-playbook
+#   uv_executable: /path/to/uv
+#   package: ansible-core
+`
+
+// WriteExample creates a private config and never overwrites an existing file.
 func WriteExample(path string) error {
+	if path == "" {
+		return fmt.Errorf("cannot initialize config: HOME is unset")
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	example := `# lazyansible configuration file
-# All fields are optional. CLI flags always take precedence.
-
-# Default inventory file (same as -i flag).
-# inventory: ./inventories/hosts.yml
-
-# Default playbook search directory (same as -d flag).
-# playbook_dir: ./playbooks
-
-# Disable mouse capture so you can select text normally in the terminal.
-# Use Shift+click as an alternative without this setting.
-# no_mouse: false
-
-# Send a desktop notification (notify-send / osascript) when a run finishes.
-notify_on_finish: true
-
-# Start with --check mode pre-enabled.
-# default_check_mode: false
-
-# Start with --diff mode pre-enabled.
-# default_diff_mode: false
-`
-	return os.WriteFile(path, []byte(example), 0o600)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	_, writeErr := io.WriteString(f, Example)
+	closeErr := f.Close()
+	if writeErr != nil {
+		return writeErr
+	}
+	return closeErr
 }

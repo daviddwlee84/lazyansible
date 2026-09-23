@@ -1,33 +1,29 @@
-name: Release
+# Local-trial stage: manual snapshot builds only. No tag-triggered publication.
+name: Build snapshot
 
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
-    name: Release
+  snapshot:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # full history required by goreleaser for changelog
-
+          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          go-version-file: go.mod
           cache: true
-
-      - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v6
+      - uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
           version: "~> v2"
-          args: release --clean
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GORELEASER_TOKEN: ${{ secrets.GORELEASER_TOKEN }}
+          args: build --snapshot --clean
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lazyansible-snapshot
+          path: dist/

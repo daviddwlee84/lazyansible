@@ -1,4 +1,4 @@
-// Package history persists playbook run records to ~/.lazyansible/history/.
+// Package history persists private run records in XDG state and reads legacy history.
 package history
 
 import (
@@ -7,27 +7,35 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
+
+	"github.com/daviddwlee84/lazyansible/internal/ansible"
+	"github.com/daviddwlee84/lazyansible/internal/paths"
 )
 
 // Record holds metadata about a single playbook or ad-hoc run.
 type Record struct {
-	ID           string            `json:"id"`
-	Kind         string            `json:"kind"` // "playbook" | "adhoc"
-	PlaybookName string            `json:"playbook_name"`
-	PlaybookPath string            `json:"playbook_path"`
-	Inventory    string            `json:"inventory"`
-	Limit        string            `json:"limit,omitempty"`
-	Tags         string            `json:"tags,omitempty"`
-	ExtraVars    string            `json:"extra_vars,omitempty"`
-	CheckMode    bool              `json:"check_mode,omitempty"`
-	DiffMode     bool              `json:"diff_mode,omitempty"`
-	Module       string            `json:"module,omitempty"` // ad-hoc
-	Args         string            `json:"args,omitempty"`   // ad-hoc
-	StartTime    time.Time         `json:"start_time"`
-	EndTime      time.Time         `json:"end_time"`
-	ExitCode     int               `json:"exit_code"`
-	HostStats    map[string]string `json:"host_stats,omitempty"` // host → status
+	ID            string              `json:"id"`
+	WorkDir       string              `json:"work_dir,omitempty"`
+	RolePath      string              `json:"role_path,omitempty"`
+	Request       *ansible.RunRequest `json:"request,omitempty"`
+	RequiresInput bool                `json:"requires_input,omitempty"`
+	Kind          string              `json:"kind"` // "playbook" | "adhoc"
+	PlaybookName  string              `json:"playbook_name"`
+	PlaybookPath  string              `json:"playbook_path"`
+	Inventory     string              `json:"inventory"`
+	Limit         string              `json:"limit,omitempty"`
+	Tags          string              `json:"tags,omitempty"`
+	ExtraVars     string              `json:"extra_vars,omitempty"`
+	CheckMode     bool                `json:"check_mode,omitempty"`
+	DiffMode      bool                `json:"diff_mode,omitempty"`
+	Module        string              `json:"module,omitempty"` // ad-hoc
+	Args          string              `json:"args,omitempty"`   // ad-hoc
+	StartTime     time.Time           `json:"start_time"`
+	EndTime       time.Time           `json:"end_time"`
+	ExitCode      int                 `json:"exit_code"`
+	HostStats     map[string]string   `json:"host_stats,omitempty"` // host → status
 }
 
 // Duration returns the run duration as a human-readable string.
@@ -49,71 +57,71 @@ func (r *Record) Result() string {
 
 // ─── Storage ──────────────────────────────────────────────────────────────────
 
-// dir returns (and creates if needed) the history directory.
-func dir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	d := filepath.Join(home, ".lazyansible", "history")
-	if err := os.MkdirAll(d, 0o755); err != nil {
-		return "", err
-	}
-	return d, nil
-}
-
-// Save writes a record to disk.
+// Save writes a record into state with owner-only permissions.
 func Save(r *Record) error {
-	d, err := dir()
-	if err != nil {
-		return err
+	d := paths.Join(paths.StateDir(), "history")
+	if d == "" {
+		return fmt.Errorf("cannot save history: HOME is unset")
 	}
-	filename := fmt.Sprintf("%s-%s.json",
-		r.StartTime.Format("20060102-150405"),
-		sanitize(r.PlaybookName),
-	)
+	name := fmt.Sprintf("%s-%s", r.StartTime.Format("20060102-150405.000000000"), sanitize(r.PlaybookName))
+	if r.ID != "" {
+		name += "-" + sanitize(r.ID)
+	}
 	data, err := json.MarshalIndent(r, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(d, filename), data, 0o644)
+	return paths.WriteFile(filepath.Join(d, name+".json"), data)
 }
 
-// Load returns all history records sorted by StartTime descending (newest first).
+// Load merges XDG and legacy records, newest first. XDG wins duplicate IDs.
+// Missing directories are empty and reads never create them.
 func Load() ([]*Record, error) {
-	d, err := dir()
-	if err != nil {
-		return nil, err
-	}
-	entries, err := os.ReadDir(d)
-	if err != nil {
-		return nil, err
-	}
-
 	var records []*Record
-	for _, e := range entries {
-		if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
+	seen := map[string]bool{}
+	for _, dir := range []string{paths.Join(paths.StateDir(), "history"), paths.Join(paths.LegacyDir(), "history")} {
+		if dir == "" {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(d, e.Name()))
+		entries, err := os.ReadDir(dir)
+		if os.IsNotExist(err) {
+			continue
+		}
 		if err != nil {
-			continue
+			return nil, err
 		}
-		var r Record
-		if err := json.Unmarshal(data, &r); err != nil {
-			continue
+		for _, entry := range entries {
+			if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+			if err != nil {
+				continue
+			}
+			var record Record
+			if err := json.Unmarshal(data, &record); err != nil {
+				continue
+			}
+			key := record.ID
+			if key == "" {
+				key = strings.Join([]string{record.StartTime.Format(time.RFC3339Nano), record.Kind, record.PlaybookPath, record.Inventory, record.Module, record.Args}, "\x00")
+			}
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			records = append(records, &record)
 		}
-		records = append(records, &r)
 	}
-
-	sort.Slice(records, func(i, j int) bool {
-		return records[i].StartTime.After(records[j].StartTime)
-	})
+	sort.SliceStable(records, func(i, j int) bool { return records[i].StartTime.After(records[j].StartTime) })
 	return records, nil
 }
 
 // Limit returns the last n records.
 func Limit(records []*Record, n int) []*Record {
+	if n < 0 {
+		return nil
+	}
 	if len(records) <= n {
 		return records
 	}

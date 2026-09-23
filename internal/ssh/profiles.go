@@ -5,8 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
+
+	"github.com/daviddwlee84/lazyansible/internal/paths"
 )
 
 // Profile holds the SSH connection parameters for a named profile.
@@ -68,24 +69,16 @@ func (p *Profile) Summary() string {
 // ─── Storage ──────────────────────────────────────────────────────────────────
 
 func profilesPath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
+	p := paths.Join(paths.ConfigDir(), "ssh-profiles.json")
+	if p == "" {
+		return "", fmt.Errorf("cannot locate config directory: HOME is unset")
 	}
-	dir := filepath.Join(home, ".lazyansible")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "ssh-profiles.json"), nil
+	return p, nil
 }
 
 // Load reads profiles from disk. Returns an empty slice if the file doesn't exist.
 func Load() ([]*Profile, error) {
-	path, err := profilesPath()
-	if err != nil {
-		return nil, err
-	}
-	data, err := os.ReadFile(path)
+	data, err := paths.ReadConfigFile("ssh-profiles.json")
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
@@ -93,7 +86,10 @@ func Load() ([]*Profile, error) {
 		return nil, err
 	}
 	var profiles []*Profile
-	return profiles, json.Unmarshal(data, &profiles)
+	if err := json.Unmarshal(data, &profiles); err != nil {
+		return nil, err
+	}
+	return profiles, nil
 }
 
 // Save writes profiles to disk.
@@ -106,7 +102,7 @@ func Save(profiles []*Profile) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+	return paths.WriteFile(path, data)
 }
 
 func shortenPath(p string) string {

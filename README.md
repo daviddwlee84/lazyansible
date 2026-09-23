@@ -1,278 +1,220 @@
 # lazyansible
 
-<p align="center">
-  <img src="https://img.shields.io/badge/version-1.0.4-7C3AED?style=flat-square" alt="version">
-  <img src="https://img.shields.io/badge/Go-1.22%2B-00ADD8?style=flat-square&logo=go" alt="go version">
-  <img src="https://img.shields.io/badge/license-MIT-22C55E?style=flat-square" alt="license">
-  <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS-06B6D4?style=flat-square" alt="platform">
-</p>
+A keyboard-driven Ansible workspace: inspect inventory, choose a playbook, review
+the command, and follow the result in the same terminal.
 
-<p align="center">
-  <strong>A terminal UI for Ansible — manage inventories, run playbooks, stream logs.</strong><br>
-  Inspired by <a href="https://github.com/jesseduffield/lazydocker">lazydocker</a>.
-</p>
+This is the permanent personal fork
+[`daviddwlee84/lazyansible`](https://github.com/daviddwlee84/lazyansible), derived
+from [`kocierik/lazyansible`](https://github.com/kocierik/lazyansible) under MIT.
+The current fork changes are an early local trial on macOS and Linux. Build this
+checkout to try them; the upstream Homebrew, Scoop, and AUR packages install the
+upstream project, not these changes.
 
----
+## Try this checkout
 
-<img width="1331" height="707" alt="lazyansible TUI" src="https://github.com/user-attachments/assets/fb7a46d6-4417-47d7-97c2-7fd8f28c4c2f" />
+Requires **Go 1.24.2+** to build. An existing Ansible installation is usable;
+**uv** is needed only for the optional shared-tool installation and upgrade
+commands. `ansible-lint`, an external editor, and desktop notification utilities
+are optional integrations.
 
----
+```sh
+# From this checkout
+mkdir -p bin
+go build -o bin/lazyansible ./cmd/lazyansible
+./bin/lazyansible --version
+./bin/lazyansible --help
 
-## Why lazyansible?
-
-Running Ansible from the CLI is powerful but low-visibility: you get a wall of text, no easy host status overview, and no way to navigate your inventory interactively.
-
-**lazyansible** wraps Ansible in a panel-based TUI that shows inventory, playbooks, per-host status, and streaming logs — all in one terminal window, all keyboard-driven.
-
----
-
-## Features
-
-- **Inventory Explorer** — browse INI, YAML, and JSON inventories as a collapsible tree; set host/group limits with a single keypress
-- **Playbook Runner** — discover and run playbooks with `--check`, `--diff`, tags, extra-vars and limit; see the exact command echoed in the log panel
-- **Live Log Streaming** — colorised output with TASK/PLAY section headers, scroll, search, and level filter (failed / changed / ok)
-- **Per-host Status** — real-time ok / changed / failed / unreachable counters for every host
-- **Ansible Vault** — auto-detects encrypted files; set the password once and it's used for every run
-- **Ad-hoc Commands** — run any Ansible module against any host or group, with optional `--become`
-- **Run History** — every run is persisted; browse and re-run any past execution
-- **Role Browser** — inspect tasks, defaults, handlers, and dependencies; run a role directly
-- **Ansible Galaxy** — browse installed roles and collections, install new ones with live output
-- **SSH Profiles** — save named connection configurations and apply them as extra-vars
-- **Run Profiles** — save the full run configuration (playbook + limit + tags + extra-vars + flags) as a named profile
-- **Multi-environment** — hot-swap inventory files at runtime without restarting
-- **Inline Editor** — open any playbook or `group_vars`/`host_vars` file in `$EDITOR` without leaving the TUI
-- **Desktop Notifications** — get notified when a long run completes (Linux: `notify-send`, macOS: `osascript`)
-- **Config File** — persistent defaults via `~/.lazyansible/config.yml`
-
----
-
-## Installation
-
-### Homebrew (macOS / Linux)
-
-```bash
-brew install kocierik/lazyansible/lazyansible
+# Select a project explicitly; relative inventory paths use that directory.
+./bin/lazyansible -C /path/to/ansible -i inventories/localhost.ini -d playbooks
 ```
 
-### AUR (Arch Linux)
+`-C` / `--chdir` chooses the process working directory (`--workdir` is an alias).
+A bare invocation opens the dashboard in a terminal. Noninteractive usage uses
+the CLI subcommands; it never opens a prompt implicitly.
 
-```bash
-yay -S lazyansible-bin
+A disposable localhost fixture is included for trying the interface:
+
+```sh
+./bin/lazyansible -C testdata/localhost -i inventory.ini -d .
 ```
 
-Or with any other AUR helper:
+The fixture has no package installation or file-changing task. It demonstrates
+ok, changed, skipped, and ignored-failure output using debug actions. Press `r`
+on its playbook to review; the review initially selects Cancel.
 
-```bash
-paru -S lazyansible-bin
+To update this trial binary, update the checkout and run the same build command.
+There is deliberately no lazyansible self-updater yet. Ansible updates below are
+a separate operation. See the [release follow-up](backlog/release-and-upgrade.md).
+
+## Everyday interaction
+
+The main screen keeps inventory, playbooks, host status, and logs together.
+`:`, the action palette, exposes configuration inspection, resolved inventory,
+Ansible runtime management, and lazyansible settings without memorizing keys.
+`?` shows actions applicable to the focused panel.
+
+| Context | Keys | Action |
+| --- | --- | --- |
+| Navigation | Arrows or `j` / `k`; `g` / `gg`, `G` | Move, first, last |
+| Focus | Tab / Shift+Tab, `1`–`4` | Switch panels |
+| Inventory | `h` / `l`, Left / Right, Space | Collapse, expand, toggle groups |
+| Inventory | Enter; `s` | Inspect selection; set host/group limit |
+| Playbooks | Enter / Space; `r` | View source; review a run |
+| Playbooks | `c`, `d`, `t`, `e` | Check mode, diff mode, tags, extra variables |
+| Lists and logs | `/`; Esc | Search/filter; leave input or go back |
+| Logs | `n` / `N`, `G`, Ctrl+D / Ctrl+U | Search matches, follow bottom, half-page scroll |
+| Anywhere outside a field | `:`, `?`, `q` | Actions, help, quit |
+
+Text fields own printable keys: typing `j`, `q`, or `/` does not navigate or quit.
+Outside the inventory tree, `h` / `l` also changes panel focus. History (`H`), run
+profiles (`F`), SSH profiles (`P`), role browsing (`O`), ad-hoc commands (`!`),
+Vault (`V`), Galaxy (`A`), and inventory switching remain available through help
+and the action palette.
+
+Before a playbook, ad-hoc, or role execution, review shows the project directory,
+inventory/target, active Ansible runtime, flags, and a redacted command. The CLI
+and TUI use the same preparation and execution service. Background observations
+and running commands leave navigation available; Esc returns from an inspector.
+
+## Preferences and storage
+
+macOS and Linux use XDG locations consistently:
+
+| Content | Location | Default |
+| --- | --- | --- |
+| Preferences | `$XDG_CONFIG_HOME/lazyansible/config.yml` | `~/.config/lazyansible/config.yml` |
+| Run and SSH profiles | Same config directory, `*-profiles.json` | `~/.config/lazyansible/` |
+| Run history | `$XDG_STATE_HOME/lazyansible/history/` | `~/.local/state/lazyansible/history/` |
+| Update observations | `$XDG_CACHE_HOME/lazyansible/` | `~/.cache/lazyansible/` |
+
+Relative XDG variables are ignored. Reads do not create these directories; saves
+create private files. The selected config is `--config`, then
+`LAZYANSIBLE_CONFIG`, then the XDG default. If the default does not exist,
+`~/.lazyansible/config.yml` remains a read fallback. An explicit missing or
+invalid config reports an error. No project-local preferences are loaded
+implicitly.
+
+```sh
+./bin/lazyansible config init       # exclusive create; never overwrites
+./bin/lazyansible config show       # effective values and selected path
+./bin/lazyansible config show --json
+./bin/lazyansible config edit       # VISUAL, then EDITOR; quoted arguments work
 ```
 
-### Scoop (Windows)
-
-```powershell
-scoop bucket add lazyansible https://github.com/kocierik/scoop-lazyansible
-scoop install lazyansible
-```
-
-### go install
-
-```bash
-go install github.com/kocierik/lazyansible/cmd/lazyansible@latest
-```
-
-### From source
-
-```bash
-git clone https://github.com/kocierik/lazyansible
-cd lazyansible
-go build -o lazyansible ./cmd/lazyansible
-sudo mv lazyansible /usr/local/bin/
-```
-
-### Requirements
-
-- `ansible-playbook` in `$PATH`
-- `ansible` (for ad-hoc commands)
-- `ansible-lint` *(optional — for lint integration)*
-- `ansible-galaxy` *(optional — for Galaxy browser)*
-- `notify-send` on Linux or `terminal-notifier` on macOS *(optional — for desktop notifications)*
-- Go 1.22+ *(only required for building from source)*
-
----
-
-## Quick Start
-
-```bash
-# Auto-discover inventory and playbooks in the current directory
-lazyansible
-
-# Specify an inventory file
-lazyansible -i inventories/production.yml
-
-# Specify a playbook directory
-lazyansible -d playbooks/
-
-# Both
-lazyansible -i inventories/staging.yaml -d playbooks/
-
-# Disable mouse capture (allows native terminal text selection)
-lazyansible --no-mouse
-
-# Create an annotated config file at ~/.lazyansible/config.yml
-lazyansible --init-config
-```
-
-### Auto-discovery
-
-When no flags are given, lazyansible searches for inventory and playbook files in the current directory and its parent, checking the following names in order:
-
-| Type | Candidates |
-|---|---|
-| Inventory | **First match wins**, in order: `inventory`, `hosts`, `inventory.ini`, then `inventory.yml` / `.yaml`, `inventory.json`, `hosts.json`, `hosts.yml` / `.yaml`; also `inventories/*` in `.` and `..` |
-| Playbooks | all `.yml` / `.yaml` files in `playbooks/`, `.`, and `..` |
-
-### Config file
+`--init-config` remains an alias for `config init`. `config edit` opens the selected
+file even when it is malformed and validates saved edits afterward. Restart the
+dashboard to apply changed preferences.
 
 ```yaml
-# ~/.lazyansible/config.yml
-
-# Default inventory (same as -i flag)
-# inventory: ./inventories/hosts.yml
-
-# Default playbook directory (same as -d flag)
-# playbook_dir: ./playbooks
-
-# Disable mouse so you can select terminal text normally
-# no_mouse: false
-
-# Send a desktop notification when a run completes
-notify_on_finish: true
-
-# Start with --check / --diff pre-enabled
-# default_check_mode: false
-# default_diff_mode: false
+# ~/.config/lazyansible/config.yml
+# Relative paths use the launch working directory.
+# inventory: inventories/localhost.ini
+# playbook_dir: playbooks
+no_mouse: false
+notify_on_finish: false
+default_check_mode: false
+default_diff_mode: false
+check_updates: true
+# Optional runtime selection; existing uv receipts own version/Python policy.
+# runtime:
+#   executable: /path/to/ansible-playbook
+#   uv_executable: /path/to/uv
+#   package: ansible-core
 ```
 
-CLI flags always override config file values.
+Explicit flags override file values, including `--no-mouse=false`, `--check=false`,
+`--diff=false`, `--notify=false`, and `--check-updates=false`.
 
----
+Profiles read their legacy `~/.lazyansible/*-profiles.json` file until an XDG
+replacement exists; future profile saves use XDG. History merges both locations,
+with XDG records winning duplicate IDs. Legacy files are not deleted or rewritten.
+History omits sensitive run inputs. A record requiring omitted arguments, extra
+variables, or Vault input cannot be replayed silently; configure the run again.
+Legacy history without a recorded working directory remains viewable but cannot
+be replayed by guessing a project.
 
-## Keyboard Reference
+## Shared Ansible runtime
 
-### Navigation
+Runtime status resolves the active executable and verifies whether it belongs to
+an existing **uv tool** environment. Playbook, inventory, configuration, and
+Galaxy companion commands come from that installation. An ordinary launch never
+installs or upgrades Ansible.
 
-| Key | Action |
-|---|---|
-| `tab` / `shift+tab` | Cycle focus between panels |
-| `1` `2` `3` `4` | Jump directly to Inventory / Playbooks / Status / Logs |
-| `j` / `k` | Move cursor down / up |
-| `g` / `G` | Jump to top / bottom |
-| `?` | Toggle help overlay |
-| `q` / `ctrl+c` | Quit (cancels active run) |
+```sh
+./bin/lazyansible runtime status --json
+./bin/lazyansible runtime check --json
 
-### Inventory panel
+# Review first; execute explicitly when ready.
+./bin/lazyansible runtime upgrade --dry-run
+./bin/lazyansible runtime upgrade --yes
 
-| Key | Action |
-|---|---|
-| `enter` / `space` | Expand / collapse group |
-| `enter` on host or group | Set as run limit |
-| `E` | Open `host_vars` / `group_vars` file in `$EDITOR` (creates if missing) |
-| `!` | Ad-hoc command runner for selected host / group |
-
-### Playbooks panel
-
-| Key | Action |
-|---|---|
-| `r` / `enter` | Run selected playbook |
-| `c` | Toggle `--check` mode |
-| `d` | Toggle `--diff` mode |
-| `t` | Tags browser (multi-select with filter) |
-| `V` | Set `--extra-vars` |
-| `L` | Run `ansible-lint` on selected playbook |
-| `space` | View playbook YAML source with syntax highlighting |
-| `E` | Open selected playbook in `$EDITOR` |
-| `!` | Ad-hoc command runner |
-
-### Logs panel
-
-| Key | Action |
-|---|---|
-| `j` / `k` | Scroll down / up one line |
-| `ctrl+d` / `ctrl+u` | Half-page scroll |
-| `G` | Jump to bottom (resume auto-scroll) |
-| `Z` | Toggle fullscreen logs |
-| `/` | Open inline search bar |
-| `n` / `N` | Jump to next / previous search match |
-| `f` | Cycle log level filter: all → failed → changed → ok → warning |
-| `T` | Toggle timestamps |
-| `ctrl+l` | Clear logs |
-
-### Global overlays
-
-| Key | Action |
-|---|---|
-| `ctrl+V` | Ansible Vault password prompt |
-| `H` | Run history browser (browse and re-run past executions) |
-| `R` | Retry failed hosts from last run |
-| `O` | Role browser (inspect and run roles) |
-| `N` | Switch environment / inventory file at runtime |
-| `P` | SSH profile manager |
-| `A` | Ansible Galaxy browser (list and install roles / collections) |
-| `F` | Run profiles — save or load named run configurations |
-| `I` | Live-reload inventory and playbooks |
-| `X` | Export run summary as a Markdown file |
-
----
-
-## Project Layout
-
-```
-cmd/lazyansible/          Entry point, CLI flag parsing
-internal/
-  core/                   Domain types — Inventory, Host, Group, Playbook, LogLine
-  inventory/
-    parser.go             INI + YAML + JSON inventory parser; loads group_vars / host_vars
-    playbooks.go          Playbook discovery and tag extraction
-  runner/
-    runner.go             ansible-playbook / ansible execution with live streaming
-  history/                Run records persisted in ~/.lazyansible/history/
-  vault/                  Vault-file detection and temp password-file helper
-  roles/                  Role scanner (tasks, defaults, handlers, meta)
-  ssh/                    SSH profile persistence (~/.lazyansible/ssh-profiles.json)
-  galaxy/                 ansible-galaxy CLI wrapper
-  runprofiles/            Named run config persistence
-  notify/                 Desktop notification helper (notify-send / osascript)
-  config/                 User config loader (~/.lazyansible/config.yml)
-  editor/                 $EDITOR launcher via tea.ExecProcess
-  ui/
-    app.go                Root Bubble Tea model — layout, keybindings, state machine
-    styles.go             Lip Gloss colour palette and shared overlay styles
-    adhoc_overlay.go      Ad-hoc command form
-    extravars_overlay.go  --extra-vars text input
-    tags_overlay.go       Tags multi-select browser
-    vault_overlay.go      Vault password input
-    history_overlay.go    Run history browser
-    roles_overlay.go      Two-pane role browser
-    envswitch_overlay.go  Runtime inventory switcher
-    sshprofile_overlay.go SSH profile manager
-    galaxy_overlay.go     Ansible Galaxy browser
-    runprofiles_overlay.go Run profile save/load
-    playbookviewer_overlay.go YAML source viewer
-    export.go             Markdown run-report exporter
-    panels/
-      inventory.go        Inventory tree panel
-      playbooks.go        Playbook list panel
-      status.go           Per-host status panel
-      logs.go             Streaming log panel with search and filter
+# For a new installation, optionally choose a version/Python request.
+./bin/lazyansible runtime install ansible-core --python 3.13 --dry-run
+./bin/lazyansible runtime install ansible-core --python 3.13 --yes
 ```
 
----
+Upgrades target only the detected package, for example `uv tool upgrade
+ansible-core`, preserving the existing uv tool's constraints and settings. They
+do not upgrade uv, every Python tool, Ansible collections, or lazyansible. A
+non-uv installation reports its ownership instead of being overwritten.
 
-## Contributing
+Update observations respect the installed tool's indexes and Python. They are
+cached for 24 hours; an explicit `runtime check` refreshes the observation.
+Network/unsupported-policy failures are shown as unknown rather than current.
+A newer release may be outside an installed version constraint, so an available
+update does not promise the next upgrade will choose that exact version.
+Disable automatic background checks with `check_updates: false`; manual checking
+and runtime status remain available. In the Runtime view, `c` checks, `u` reviews
+an upgrade, and `i` reviews installation.
 
-Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
+## Inspect and automate
 
----
+```sh
+./bin/lazyansible -C /path/to/ansible inspect inventory --json
+./bin/lazyansible -C /path/to/ansible inspect config --json
+./bin/lazyansible -C /path/to/ansible run playbooks/site.yml --check --diff --dry-run
+./bin/lazyansible -C /path/to/ansible adhoc all -m ansible.builtin.ping --dry-run
+./bin/lazyansible -C /path/to/ansible role run roles/example --hosts staging --dry-run
+```
+
+Execution commands print the plan and request one confirmation in a terminal.
+Use `--yes` for explicit noninteractive execution. `--dry-run` prepares the same
+command without executing it; `--json` supports observations and dry-run plans,
+not execution. Diagnostics go to stderr. Child exit status is preserved, usage
+errors return 2, and cancellation returns 130.
+
+Inventory inspection uses `ansible-inventory --list`; configuration inspection
+uses changed settings and origins reported by `ansible-config`. These observations
+are **not complete task-time variables or variable provenance**. Facts, dynamic
+includes, role/task context, and extra variables can change execution results.
+Sensitive keys and command arguments are redacted, but arbitrary output from an
+Ansible task can still contain whatever that task prints.
+
+For parsed execution output, lazyansible sets `ANSIBLE_STDOUT_CALLBACK=default`
+and disables color **only in its child processes**. This leaves an existing
+`ansible.cfg`, including a custom `clean` callback used by dotfiles, unchanged.
+The review and config inspector disclose these execution overrides.
+
+## Development and future work
+
+```sh
+go test ./...
+go vet ./...
+go build -o bin/lazyansible ./cmd/lazyansible
+python3 testdata/pty_smoke.py ./bin/lazyansible
+python3 testdata/pty_smoke.py ./bin/lazyansible --signal
+```
+
+The PTY harness uses temporary HOME/XDG directories and fake Ansible programs;
+it needs Python 3 and no external Python package. See [CONTRIBUTING.md](CONTRIBUTING.md)
+and [AGENTS.md](AGENTS.md) for architecture and verification rules.
+
+[TODO.md](TODO.md) indexes deferred work; [backlog/](backlog/README.md) retains
+research and [pitfalls/](pitfalls/README.md) records known traps. Full variable
+provenance and graph rendering are [evaluation work](backlog/variable-provenance-graphs.md).
+No ansible-navigator, execution environment, or ansible-dev-tools bundle is
+required for this workflow.
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE). Original copyright and attribution to kocierik are preserved.

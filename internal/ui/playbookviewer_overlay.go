@@ -7,8 +7,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
-	"github.com/kocierik/lazyansible/internal/editor"
+	"github.com/daviddwlee84/lazyansible/internal/editor"
 )
 
 // PlaybookViewerOverlay shows the raw YAML of a playbook with syntax colouring.
@@ -85,9 +86,9 @@ func (v *PlaybookViewerOverlay) Update(msg tea.Msg) tea.Cmd {
 		if v.offset < 0 {
 			v.offset = 0
 		}
-	case "g":
+	case "g", "home":
 		v.offset = 0
-	case "G":
+	case "G", "end":
 		v.offset = maxOff
 	case "e":
 		// Open in external editor; TUI suspends and resumes after.
@@ -112,8 +113,8 @@ func (v *PlaybookViewerOverlay) contentHeight() int {
 }
 
 func (v *PlaybookViewerOverlay) View() string {
-	boxW := min(v.width-4, 100)
-	boxH := min(v.height-4, 40)
+	boxW := max(1, min(v.width-4, 100))
+	boxH := max(1, min(v.height-4, 40))
 
 	var sb strings.Builder
 	sb.WriteString(overlayTitleStyle.Render("Playbook: "+v.title) + "\n\n")
@@ -135,10 +136,7 @@ func (v *PlaybookViewerOverlay) View() string {
 	gutterW := len(fmt.Sprintf("%d", total)) + 1
 
 	lineNumStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#374151"))
-	codeW := boxW - gutterW - 6
-	if codeW < 10 {
-		codeW = 10
-	}
+	codeW := max(0, boxW-gutterW-6)
 	for i := v.offset; i < end; i++ {
 		numStr := fmt.Sprintf("%*d ", gutterW, i+1)
 		num := lineNumStyle.Render(numStr)
@@ -158,10 +156,13 @@ func (v *PlaybookViewerOverlay) View() string {
 
 // yamlHighlight applies simple YAML syntax colouring to a single line.
 func yamlHighlight(line string, maxW int) string {
-	runes := []rune(line)
-	if len(runes) > maxW && maxW > 3 {
-		line = string(runes[:maxW-1]) + "…"
+	if maxW <= 0 {
+		return ""
 	}
+	return ansi.Truncate(highlightYAMLLine(ansi.Truncate(line, maxW, "…")), maxW, "…")
+}
+
+func highlightYAMLLine(line string) string {
 
 	trimmed := strings.TrimSpace(line)
 

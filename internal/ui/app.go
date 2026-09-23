@@ -12,20 +12,19 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/kocierik/lazyansible/internal/core"
-	"github.com/kocierik/lazyansible/internal/editor"
-	"github.com/kocierik/lazyansible/internal/galaxy"
-	"github.com/kocierik/lazyansible/internal/history"
-	"github.com/kocierik/lazyansible/internal/inventory"
-	"github.com/kocierik/lazyansible/internal/notify"
-	"github.com/kocierik/lazyansible/internal/runner"
-	"github.com/kocierik/lazyansible/internal/runprofiles"
-	"github.com/kocierik/lazyansible/internal/ui/panels"
-	"github.com/kocierik/lazyansible/internal/vault"
+	"github.com/daviddwlee84/lazyansible/internal/ansible"
+	"github.com/daviddwlee84/lazyansible/internal/buildinfo"
+	"github.com/daviddwlee84/lazyansible/internal/core"
+	"github.com/daviddwlee84/lazyansible/internal/editor"
+	"github.com/daviddwlee84/lazyansible/internal/galaxy"
+	"github.com/daviddwlee84/lazyansible/internal/history"
+	"github.com/daviddwlee84/lazyansible/internal/inventory"
+	"github.com/daviddwlee84/lazyansible/internal/notify"
+	"github.com/daviddwlee84/lazyansible/internal/runner"
+	"github.com/daviddwlee84/lazyansible/internal/runprofiles"
+	"github.com/daviddwlee84/lazyansible/internal/ui/panels"
+	"github.com/daviddwlee84/lazyansible/internal/vault"
 )
-
-// version is set at build time via -ldflags "-X github.com/kocierik/lazyansible/internal/ui.version=x.y.z"
-var version = "1.0.0"
 
 // AppMode tracks which overlay (if any) is currently shown.
 type AppMode int
@@ -44,13 +43,23 @@ const (
 	AppModeGalaxy
 	AppModeRunProfiles
 	AppModePlaybookViewer
+	AppModeWorkbench
+	AppModeRunReview
+	AppModePalette
 )
 
 // Config holds the launch-time configuration.
 type Config struct {
-	InventoryPath string
-	PlaybookDir   string
-	WorkDir       string
+	Context          context.Context
+	InventoryPath    string
+	PlaybookDir      string
+	WorkDir          string
+	DefaultCheckMode bool
+	DefaultDiffMode  bool
+	ConfigPath       string
+	CheckUpdates     bool
+	Runtime          ansible.RuntimeOptions
+	generation       uint64
 }
 
 // App is the root Bubble Tea model.
@@ -59,9 +68,23 @@ type App struct {
 	program   *tea.Program
 	ctx       context.Context
 	cancelRun context.CancelFunc
+	cancelAll context.CancelFunc
 
 	width  int
 	height int
+
+	// Workbench and asynchronous request ownership.
+	workbench             *workbenchModel
+	palette               *paletteModel
+	review                runReview
+	reviewID              uint64
+	runtimeBusy           bool
+	runtimePending        bool
+	runtimeID             uint64
+	runtimeCancel         context.CancelFunc
+	profileNeedsSelection bool
+	runtimeSummary        string
+	pendingProfile        *runprofiles.Profile
 
 	// Panel models.
 	invPanel    *panels.InventoryPanel
@@ -69,8 +92,9 @@ type App struct {
 	statusPanel *panels.StatusPanel
 	logsPanel   *panels.LogsPanel
 
-	focused core.Panel
-	mode    AppMode
+	focused    core.Panel
+	mode       AppMode
+	helpOffset int
 
 	// v0.2 overlays.
 	adhocOverlay     *AdHocOverlay
@@ -97,6 +121,7 @@ type App struct {
 	inventory    *core.Inventory
 	playbooks    []*core.Playbook
 	running      bool
+	quitting     bool
 	statusMsg    string
 	extraVarsRaw string
 
@@ -123,11 +148,19 @@ type App struct {
 
 // New creates a new App with the given configuration.
 func New(cfg Config) *App {
+	parent := cfg.Context
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancel(parent)
+	cfg.generation = 1
+	cfg.Runtime.WorkDir = cfg.WorkDir
+	galaxy.SetContext(ansible.ProjectContext{WorkDir: cfg.WorkDir, Inventory: cfg.InventoryPath, PlaybookDir: cfg.PlaybookDir, Executable: cfg.Runtime.Executable}, cfg.Runtime)
 	a := &App{
 		config:  cfg,
 		focused: core.PanelInventory,
 		mode:    AppModeNormal,
-		ctx:     context.Background(),
+		ctx:     ctx, cancelAll: cancel,
 	}
 
 	a.invPanel = panels.NewInventoryPanel(nil, 0, 0)
@@ -147,11 +180,18 @@ func New(cfg Config) *App {
 	a.runProfilesOverlay = newRunProfilesOverlay(0, 0)
 	a.pbViewerOverlay = newPlaybookViewerOverlay(0, 0)
 
+	a.pbPanel.SetCheckMode(cfg.DefaultCheckMode)
+	a.pbPanel.SetDiffMode(cfg.DefaultDiffMode)
+	a.workbench = newWorkbench()
+	a.palette = newPalette()
 	a.updateFocus()
 	return a
 }
 
 func (a *App) SetProgram(p *tea.Program) { a.program = p }
+
+// Close cancels work owned by this dashboard, including pending discovery.
+func (a *App) Close() { a.cancelAll() }
 
 // SetNotifyOnFinish enables desktop notifications at run completion.
 func (a *App) SetNotifyOnFinish(v bool) { a.notifyOnFinish = v }
@@ -161,27 +201,41 @@ func (a *App) Init() tea.Cmd {
 		loadInventoryCmd(a.config),
 		loadPlaybooksCmd(a.config),
 		a.scanVaultCmd(),
+		a.runtimeRefreshCmd(a.config.CheckUpdates, false),
 	)
 }
+
+// ShutdownMsg requests cancellation and waits for an owned child to stop.
+type ShutdownMsg struct{}
 
 // ─── Messages ────────────────────────────────────────────────────────────────
 
 type inventoryLoadedMsg struct {
-	inv  *core.Inventory
-	path string // absolute path passed to ansible -i (set after auto-discovery)
+	inv        *core.Inventory
+	path       string // absolute path passed to ansible -i (set after auto-discovery)
+	generation uint64
 }
-type playbooksLoadedMsg struct{ pbs []*core.Playbook }
+type playbooksLoadedMsg struct {
+	pbs        []*core.Playbook
+	generation uint64
+}
 type vaultScanDoneMsg struct{ hasVault bool }
 type lintFinishedMsg struct{ exitCode int }
 type exportDoneMsg struct {
 	path string
 	err  error
 }
-type errMsg struct{ err error }
+type errMsg struct {
+	err        error
+	generation uint64
+}
 
 // ─── Update ──────────────────────────────────────────────────────────────────
 
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if _, ok := msg.(ShutdownMsg); ok {
+		return a, a.requestQuit()
+	}
 	if sz, ok := msg.(tea.WindowSizeMsg); ok {
 		a.width = sz.Width
 		a.height = sz.Height
@@ -218,13 +272,16 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, editor.Open(ep.path)
 	}
 
-	if a.mode != AppModeNormal {
-		return a.updateOverlay(msg)
+	if cmd, handled := a.updateWorkbenchResult(msg); handled {
+		return a, cmd
 	}
 
 	switch msg := msg.(type) {
 
 	case inventoryLoadedMsg:
+		if msg.generation != a.config.generation {
+			return a, nil
+		}
 		a.inventory = msg.inv
 		a.invPanel.SetInventory(msg.inv)
 		if msg.path != "" {
@@ -235,9 +292,17 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			len(msg.inv.Hosts), len(msg.inv.Groups))
 
 	case playbooksLoadedMsg:
+		if msg.generation != a.config.generation {
+			return a, nil
+		}
 		a.playbooks = msg.pbs
 		a.pbPanel.SetPlaybooks(msg.pbs)
 		a.statusMsg = fmt.Sprintf("Found %d playbooks", len(msg.pbs))
+		if a.pendingProfile != nil {
+			p := *a.pendingProfile
+			a.pendingProfile = nil
+			a.selectProfilePlaybook(p)
+		}
 
 	case vaultScanDoneMsg:
 		if msg.hasVault {
@@ -255,6 +320,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case lintFinishedMsg:
 		a.linting = false
+		if a.quitting {
+			return a, tea.Quit
+		}
 		if msg.exitCode == 0 {
 			a.statusMsg = "ansible-lint: no issues found ✓"
 		} else {
@@ -273,6 +341,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.startRun(msg)
 
 	case EnvSwitchMsg:
+		a.mode = AppModeNormal
 		return a, a.switchInventory(msg.Path)
 
 	case SSHProfileAppliedMsg:
@@ -292,38 +361,97 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.galaxyOverlay.Update(msg)
 
 	case RunProfileLoadMsg:
-		a.applyRunProfile(msg.Profile)
 		a.mode = AppModeNormal
-		a.statusMsg = fmt.Sprintf("Profile loaded: %s", msg.Profile.Name)
+		return a, a.applyRunProfile(msg.Profile)
+	case panels.InspectInventoryMsg:
+		target := "group:" + msg.Group
+		if msg.Host != "" {
+			target = "host:" + msg.Host
+		}
+		return a, a.openWorkbench("inventory", target)
+	case panels.SetLimitMsg:
+		a.pbPanel.SetLimit(msg.Limit)
+		a.statusMsg = "Limit → " + msg.Limit
+		return a, nil
+	case panels.ViewPlaybookMsg:
+		if msg.Playbook != nil {
+			a.pbViewerOverlay.Load(msg.Playbook.Name, msg.Playbook.Path)
+			a.mode = AppModePlaybookViewer
+		}
+		return a, nil
+	case AdHocRunMsg:
+		return a, a.startAdHoc(msg.Opts)
+	case RoleRunMsg:
+		return a, a.startRoleRun(msg)
+	case HistoryRunMsg:
+		return a, a.startRunFromHistory(msg.Record)
+	case ExtraVarsConfirmedMsg:
+		a.extraVarsRaw = msg.Raw
+		a.pbPanel.SetExtraVars(msg.Raw)
+		a.statusMsg = "Extra vars updated (values hidden)"
+		a.mode = AppModeNormal
+		return a, nil
+	case TagsConfirmedMsg:
+		a.pbPanel.SetActiveTags(msg.Tags)
+		a.statusMsg = "Tags updated"
+		a.mode = AppModeNormal
+		return a, nil
+	case VaultPasswordMsg:
+		a.vaultPassword = msg.Password
+		a.statusMsg = "Vault password updated for this session"
+		a.mode = AppModeNormal
+		return a, nil
+	case pbViewerCloseMsg:
+		a.mode = AppModeNormal
 		return a, nil
 
 	case errMsg:
+		if msg.generation != 0 && msg.generation != a.config.generation {
+			return a, nil
+		}
 		a.statusMsg = "Error: " + msg.err.Error()
 
 	case tea.KeyMsg:
+		if msg.String() == "ctrl+c" {
+			return a, a.requestQuit()
+		}
+		if a.mode != AppModeNormal {
+			return a.updateOverlay(msg)
+		}
 		return a.updateNormalKeys(msg)
 	}
-
+	if a.mode != AppModeNormal {
+		return a.updateOverlay(msg)
+	}
 	return a, a.delegateToPanel(msg)
 }
 
-func (a *App) updateNormalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (a *App) updateLegacyKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// When the log panel's search bar is active, forward ALL key events to it
 	// so global shortcuts (q, V, etc.) don't fire during text input.
-	if a.focused == core.PanelLogs && a.logsPanel.SearchActive() {
+	if (a.focused == core.PanelLogs && a.logsPanel.SearchActive()) ||
+		(a.focused == core.PanelInventory && a.invPanel.FilterActive()) ||
+		(a.focused == core.PanelPlaybooks && a.pbPanel.FilterActive()) {
 		return a, a.delegateToPanel(msg)
 	}
 
+	if msg.String() == "N" && a.focused == core.PanelLogs {
+		return a, a.delegateToPanel(msg)
+	}
+	if a.focused != core.PanelInventory && (msg.String() == "h" || msg.String() == "left" || msg.String() == "l" || msg.String() == "right") {
+		if msg.String() == "h" || msg.String() == "left" {
+			a.cycleFocus(-1)
+		} else {
+			a.cycleFocus(1)
+		}
+		return a, nil
+	}
 	switch msg.String() {
 	case "ctrl+c", "q":
-		if a.cancelRun != nil {
-			a.cancelRun()
-		}
-		a.cleanupVaultFile()
-		a.cleanupTempPlaybook()
-		return a, tea.Quit
+		return a, a.requestQuit()
 
 	case "?":
+		a.helpOffset = 0
 		a.mode = AppModeHelp
 		return a, nil
 
@@ -381,6 +509,7 @@ func (a *App) updateNormalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if a.focused == core.PanelPlaybooks {
 			if pb := a.pbPanel.SelectedPlaybook(); pb != nil {
 				a.tagsOverlay.SetTags(pb.Tags)
+				a.tagsOverlay.SetSelectedTags(strings.Join(a.pbPanel.SelectedTags(), ","))
 				a.mode = AppModeTagsBrowser
 				return a, nil
 			}
@@ -452,8 +581,13 @@ func (a *App) updateNormalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					a.program.Send(m)
 				}
 			}
+			project := a.projectContext()
 			return a, func() tea.Msg {
-				msg := runner.LintCmd(ctx, pb.Path, sendFn)()
+				plan, err := ansible.Prepare(ctx, ansible.RunRequest{Kind: "lint", Project: project, Playbook: pb.Path})
+				if err != nil {
+					return lintFinishedMsg{exitCode: -1}
+				}
+				msg := runner.StreamPlanCmd(ctx, plan, sendFn)()
 				if rf, ok := msg.(runner.RunFinishedMsg); ok {
 					return lintFinishedMsg{exitCode: rf.ExitCode}
 				}
@@ -481,7 +615,7 @@ func (a *App) updateNormalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "I":
 		// Live reload inventory + playbooks without restarting.
 		a.statusMsg = "Reloading inventory and playbooks…"
-		return a, tea.Batch(loadInventoryCmd(a.config), loadPlaybooksCmd(a.config))
+		return a, a.reloadProject()
 
 	case " ":
 		// Playbook viewer: show YAML source of selected playbook.
@@ -513,11 +647,8 @@ func (a *App) updateNormalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "A":
 		// Ansible Galaxy browser.
-		if err := checkGalaxyBinary(); err != nil {
-			a.statusMsg = err.Error()
-			return a, nil
-		}
 		a.mode = AppModeGalaxy
+		galaxy.SetContext(a.projectContext(), a.config.Runtime)
 		return a, a.galaxyOverlay.Load()
 
 	case "F":
@@ -527,7 +658,7 @@ func (a *App) updateNormalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		pb := a.pbPanel.SelectedPlaybook()
 		pbName := ""
 		if pb != nil {
-			pbName = pb.Name
+			pbName = pb.Path
 		}
 		a.runProfilesOverlay.SetSnapshot(
 			pbName,
@@ -537,191 +668,88 @@ func (a *App) updateNormalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.pbPanel.CheckMode(),
 			a.pbPanel.DiffMode(),
 			a.config.InventoryPath,
+			a.config.WorkDir,
 		)
 		a.mode = AppModeRunProfiles
 		return a, nil
 
-	case "enter":
-		if a.focused == core.PanelInventory {
-			if host := a.invPanel.SelectedHost(); host != "" {
-				a.pbPanel.SetLimit(host)
-				a.statusMsg = "Limit → " + host
-			} else if group := a.invPanel.SelectedGroup(); group != "" {
-				a.pbPanel.SetLimit(group)
-				a.statusMsg = "Limit → " + group + " (group)"
-			}
-			return a, nil
-		}
 	}
 
 	return a, a.delegateToPanel(msg)
 }
 
 func (a *App) updateOverlay(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if key, ok := msg.(tea.KeyMsg); ok && key.String() == "esc" {
-		a.mode = AppModeNormal
-		return a, nil
+	if a.mode == AppModeWorkbench {
+		return a, a.updateWorkbench(msg)
 	}
-
-	if a.mode == AppModeHelp {
-		if _, ok := msg.(tea.KeyMsg); ok {
+	if a.mode == AppModeRunReview {
+		return a, a.updateReview(msg)
+	}
+	if a.mode == AppModePalette {
+		return a, a.updatePalette(msg)
+	}
+	if key, ok := msg.(tea.KeyMsg); ok && key.String() == "esc" {
+		consumed := false
+		switch a.mode {
+		case AppModeTagsBrowser:
+			consumed = a.tagsOverlay.HandleEscape()
+		case AppModeHistory:
+			consumed = a.historyOverlay.HandleEscape()
+		case AppModeRoles:
+			consumed = a.rolesOverlay.HandleEscape()
+		case AppModeGalaxy:
+			consumed = a.galaxyOverlay.HandleEscape()
+		case AppModeRunProfiles:
+			consumed = a.runProfilesOverlay.HandleEscape()
+		case AppModeSSHProfile:
+			consumed = a.sshProfileOverlay.HandleEscape()
+		}
+		if !consumed {
 			a.mode = AppModeNormal
 		}
 		return a, nil
 	}
-
-	// isEnter is true when the message is the Enter key — the only key that
-	// overlays use to emit confirmation commands. evalCmd is called ONLY in
-	// this case so that the blink-cursor command returned by textinput on
-	// every regular keypress is never executed synchronously (it would block
-	// ~530 ms and make typing feel laggy).
-	isEnter := isEnterKey(msg)
-
-	var cmd tea.Cmd
 	switch a.mode {
-
+	case AppModeHelp:
+		if key, ok := msg.(tea.KeyMsg); ok {
+			switch key.String() {
+			case "j", "down":
+				a.helpOffset++
+			case "k", "up":
+				a.helpOffset = max(0, a.helpOffset-1)
+			case "g", "home":
+				a.helpOffset = 0
+			case "G", "end":
+				a.helpOffset = len(a.actions())
+			case "q":
+				a.mode = AppModeNormal
+			}
+		}
+		return a, nil
 	case AppModeAdHoc:
-		cmd = a.adhocOverlay.Update(msg)
-		if isEnter && cmd != nil {
-			if result, ok := evalCmd(cmd).(AdHocRunMsg); ok {
-				a.mode = AppModeNormal
-				return a, a.startAdHoc(result.Opts)
-			}
-		}
-
+		return a, a.adhocOverlay.Update(msg)
 	case AppModeExtraVars:
-		cmd = a.extraVarsOverlay.Update(msg)
-		if isEnter && cmd != nil {
-			if ev, ok := evalCmd(cmd).(ExtraVarsConfirmedMsg); ok {
-				a.extraVarsRaw = ev.Raw
-				a.pbPanel.SetExtraVars(ev.Raw)
-				if ev.Raw != "" {
-					a.statusMsg = "Extra vars: " + ev.Raw
-				} else {
-					a.statusMsg = "Extra vars cleared"
-				}
-				a.mode = AppModeNormal
-				return a, nil
-			}
-		}
-
+		return a, a.extraVarsOverlay.Update(msg)
 	case AppModeTagsBrowser:
-		cmd = a.tagsOverlay.Update(msg)
-		if isEnter && cmd != nil {
-			if tc, ok := evalCmd(cmd).(TagsConfirmedMsg); ok {
-				a.pbPanel.SetActiveTags(tc.Tags)
-				if tc.Tags != "" {
-					a.statusMsg = "Tags → " + tc.Tags
-				} else {
-					a.statusMsg = "Tags cleared"
-				}
-				a.mode = AppModeNormal
-				return a, nil
-			}
-		}
-
+		return a, a.tagsOverlay.Update(msg)
 	case AppModeVault:
-		cmd = a.vaultOverlay.Update(msg)
-		if isEnter && cmd != nil {
-			if vp, ok := evalCmd(cmd).(VaultPasswordMsg); ok {
-				a.vaultPassword = vp.Password
-				if vp.Password != "" {
-					a.statusMsg = "Vault password set (will be used on next run)"
-				} else {
-					a.statusMsg = "Vault password cleared"
-				}
-				a.mode = AppModeNormal
-				return a, nil
-			}
-		}
-
+		return a, a.vaultOverlay.Update(msg)
 	case AppModeHistory:
-		// History is a pure list — no textinput, evalCmd is safe on all keys.
-		cmd = a.historyOverlay.Update(msg)
-		if cmd != nil {
-			if hr, ok := evalCmd(cmd).(HistoryRunMsg); ok {
-				a.mode = AppModeNormal
-				return a, a.startRunFromHistory(hr.Record)
-			}
-		}
-
+		return a, a.historyOverlay.Update(msg)
 	case AppModeRoles:
-		cmd = a.rolesOverlay.Update(msg)
-		if cmd != nil {
-			if rr, ok := evalCmd(cmd).(RoleRunMsg); ok {
-				a.mode = AppModeNormal
-				return a, a.startRoleRun(rr)
-			}
-		}
-
+		return a, a.rolesOverlay.Update(msg)
 	case AppModeEnvSwitch:
-		cmd = a.envSwitchOverlay.Update(msg)
-		if cmd != nil {
-			if es, ok := evalCmd(cmd).(EnvSwitchMsg); ok {
-				a.mode = AppModeNormal
-				return a, a.switchInventory(es.Path)
-			}
-		}
-
+		return a, a.envSwitchOverlay.Update(msg)
 	case AppModeSSHProfile:
-		cmd = a.sshProfileOverlay.Update(msg)
-		// SSHProfile has a form with textinputs; only eval on Enter.
-		if isEnter && cmd != nil {
-			if sp, ok := evalCmd(cmd).(SSHProfileAppliedMsg); ok {
-				a.sshExtraVars = sp.ExtraVars
-				if sp.ExtraVars != "" {
-					a.statusMsg = "SSH profile applied"
-				} else {
-					a.statusMsg = "SSH profile cleared"
-				}
-				a.mode = AppModeNormal
-				return a, nil
-			}
-		}
-
+		return a, a.sshProfileOverlay.Update(msg)
 	case AppModeGalaxy:
-		// Galaxy overlay emits async commands (load/install) — returned as-is.
-		cmd = a.galaxyOverlay.Update(msg)
-
+		return a, a.galaxyOverlay.Update(msg)
 	case AppModeRunProfiles:
-		cmd = a.runProfilesOverlay.Update(msg)
-		if isEnter && cmd != nil {
-			if rp, ok := evalCmd(cmd).(RunProfileLoadMsg); ok {
-				a.applyRunProfile(rp.Profile)
-				a.mode = AppModeNormal
-				a.statusMsg = fmt.Sprintf("Profile loaded: %s", rp.Profile.Name)
-				return a, nil
-			}
-		}
-
+		return a, a.runProfilesOverlay.Update(msg)
 	case AppModePlaybookViewer:
-		// Viewer has no textinput; evalCmd is safe on all keys.
-		cmd = a.pbViewerOverlay.Update(msg)
-		if cmd != nil {
-			if _, ok := evalCmd(cmd).(pbViewerCloseMsg); ok {
-				a.mode = AppModeNormal
-				return a, nil
-			}
-		}
+		return a, a.pbViewerOverlay.Update(msg)
 	}
-
-	return a, cmd
-}
-
-// isEnterKey reports whether msg is a key-press of Enter.
-func isEnterKey(msg tea.Msg) bool {
-	k, ok := msg.(tea.KeyMsg)
-	return ok && k.String() == "enter"
-}
-
-// evalCmd executes a Cmd synchronously and returns the Msg.
-// Only call this when you are certain the command returns immediately
-// (e.g. overlay confirmation commands triggered by Enter).
-func evalCmd(cmd tea.Cmd) tea.Msg {
-	if cmd == nil {
-		return nil
-	}
-	return cmd()
+	return a, nil
 }
 
 func (a *App) delegateToPanel(msg tea.Msg) tea.Cmd {
@@ -729,7 +757,13 @@ func (a *App) delegateToPanel(msg tea.Msg) tea.Cmd {
 	case core.PanelInventory:
 		return a.invPanel.Update(msg)
 	case core.PanelPlaybooks:
-		return a.pbPanel.Update(msg)
+		old := a.pbPanel.SelectedPlaybook()
+		cmd := a.pbPanel.Update(msg)
+		selected := a.pbPanel.SelectedPlaybook()
+		if a.pendingProfile == nil && selected != nil && (old == nil || old.Path != selected.Path) {
+			a.profileNeedsSelection = false
+		}
+		return cmd
 	case core.PanelStatus:
 		return a.statusPanel.Update(msg)
 	case core.PanelLogs:
@@ -746,6 +780,12 @@ func (a *App) View() string {
 	}
 
 	switch a.mode {
+	case AppModeWorkbench:
+		return a.workbenchView()
+	case AppModeRunReview:
+		return a.reviewView()
+	case AppModePalette:
+		return a.paletteView()
 	case AppModeHelp:
 		return a.renderOverlay(a.helpContent())
 	case AppModeAdHoc:
@@ -781,16 +821,32 @@ func (a *App) View() string {
 const topPanelHeight = 14
 
 func (a *App) baseView() string {
+	if a.width < 100 || a.height < 22 {
+		header := fmt.Sprintf("lazyansible %s · %s", buildinfo.String(), a.runtimeSummary)
+		views := []string{a.invPanel.View(), a.pbPanel.View(), a.statusPanel.View(), a.logsPanel.View()}
+		titles := []string{"1 Inventory (static preview)", "2 Playbooks", "3 Status", "4 Logs"}
+		content := titles[int(a.focused)] + "\n" + views[int(a.focused)]
+		body := fitScreen(content, max(1, a.width), max(1, a.height-4))
+		state := a.statusMsg
+		if a.running {
+			state = "RUNNING · " + state
+		}
+		if a.runtimeBusy {
+			state = "UPDATING ANSIBLE · " + state
+		}
+		return fitScreen(header+"\n"+body+"\n"+fitScreen(state, max(1, a.width), 1)+"\n"+a.renderStatusBar(), max(1, a.width), max(1, a.height))
+	}
 	// Layout: header(1) + topRow(topPanelHeight) + logsBox(rest) + statusBar(1) = a.height
-	available := a.height - 2 // subtract header and statusBar
+	available := a.height - 3 // header, feedback, and shortcuts
 	header := strings.TrimRight(a.renderHeader(), "\n")
 	statusBar := strings.TrimRight(a.renderStatusBar(), "\n")
+	feedback := fitScreen(a.statusMsg, max(1, a.width), 1)
 
 	var logsView string
 	if a.logsFullscreen {
 		logsView = strings.TrimRight(
 			a.wrapPanel(a.logsPanel.View(), a.width, available, true, "Logs"), "\n")
-		return forceHeight(header+"\n"+logsView+"\n"+statusBar, a.height)
+		return fitScreen(forceHeight(header+"\n"+logsView+"\n"+feedback+"\n"+statusBar, a.height), a.width, a.height)
 	}
 
 	// Top row gets a fixed height; logs get everything else.
@@ -805,7 +861,7 @@ func (a *App) baseView() string {
 	statusW := a.width - invW - pbW
 
 	invView := strings.TrimRight(
-		a.wrapPanel(a.invPanel.View(), invW, topH, a.focused == core.PanelInventory, "Inventory"), "\n")
+		a.wrapPanel(a.invPanel.View(), invW, topH, a.focused == core.PanelInventory, "Inventory (static)"), "\n")
 	pbView := strings.TrimRight(
 		a.wrapPanel(a.pbPanel.View(), pbW, topH, a.focused == core.PanelPlaybooks, "Playbooks"), "\n")
 	statusView := strings.TrimRight(
@@ -816,11 +872,11 @@ func (a *App) baseView() string {
 		a.wrapPanel(a.logsPanel.View(), a.width, botH, a.focused == core.PanelLogs, "Logs"), "\n")
 
 	// Assemble and guarantee exactly a.height rows so alt-screen never scrolls.
-	return forceHeight(header+"\n"+topRow+"\n"+logsView+"\n"+statusBar, a.height)
+	return fitScreen(forceHeight(header+"\n"+topRow+"\n"+logsView+"\n"+feedback+"\n"+statusBar, a.height), a.width, a.height)
 }
 
 func (a *App) renderOverlay(content string) string {
-	return lipgloss.Place(a.width, a.height, lipgloss.Center, lipgloss.Center, content)
+	return fitScreen(lipgloss.Place(a.width, a.height, lipgloss.Center, lipgloss.Center, fitScreen(content, max(1, a.width), max(1, a.height))), max(1, a.width), max(1, a.height))
 }
 
 // wrapPanel wraps content in a bordered panel box of exactly w×h terminal cells.
@@ -1021,7 +1077,7 @@ func (a *App) renderHeader() string {
 
 	// ── Logo section ──────────────────────────────────────────────────────
 	logo := logoStyle.Render("⚡ lazyansible") +
-		verStyle.Render(" v"+version)
+		verStyle.Render(" "+buildinfo.String())
 
 	// ── State badges ──────────────────────────────────────────────────────
 	var badges []string
@@ -1116,281 +1172,15 @@ func (a *App) renderHeader() string {
 		Render(left + strings.Repeat(" ", gap) + right)
 }
 
-func (a *App) renderStatusBar() string {
-	// ── Styles ────────────────────────────────────────────────────────────
-	keyStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#111827")).
-		Background(lipgloss.Color("#6B7280")).
-		Bold(true).
-		Padding(0, 1)
-	descStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#9CA3AF"))
-	sepStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#374151"))
-	msgStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#D1D5DB"))
-
-	pill := func(k, d string) string {
-		return keyStyle.Render(k) + descStyle.Render(" "+d)
-	}
-	sep := sepStyle.Render("  │  ")
-
-	// ── Context-specific groups ───────────────────────────────────────────
-	var contextGroup []string
-	switch a.focused {
-	case core.PanelInventory:
-		contextGroup = []string{
-			pill("enter", "set limit"),
-			pill("v", "vars"),
-			pill("E", "edit vars"),
-			pill("!", "ad-hoc"),
-			pill("I", "reload"),
-			pill("N", "env"),
-		}
-	case core.PanelPlaybooks:
-		checkMark := ""
-		if a.pbPanel.CheckMode() {
-			checkMark = "✓"
-		}
-		diffMark := ""
-		if a.pbPanel.DiffMode() {
-			diffMark = "✓"
-		}
-		contextGroup = []string{
-			pill("r", "run"),
-			pill("space", "view"),
-			pill("E", "edit"),
-			pill("t", "tags"),
-			pill("c", "check"+checkMark),
-			pill("d", "diff"+diffMark),
-			pill("L", "lint"),
-			pill("F", "profiles"),
-		}
-	case core.PanelLogs:
-		if a.logsFullscreen {
-			contextGroup = []string{
-				pill("/", "search"),
-				pill("f", "filter"),
-				pill("j/k", "scroll"),
-				pill("G", "end"),
-				pill("T", "time"),
-				pill("ctrl+l", "clear"),
-				pill("X", "export"),
-				pill("Z", "normal"),
-			}
-		} else {
-			contextGroup = []string{
-				pill("/", "search"),
-				pill("f", "filter"),
-				pill("j/k", "scroll"),
-				pill("T", "time"),
-				pill("ctrl+l", "clear"),
-				pill("Z", "fullscreen"),
-			}
-		}
-	case core.PanelStatus:
-		contextGroup = []string{
-			pill("r", "run"),
-		}
-		if len(a.retryHosts) > 0 {
-			contextGroup = append(contextGroup, pill("R", "retry"))
-		}
-	}
-
-	// ── Global shortcuts (always visible) ─────────────────────────────────
-	globalGroup := []string{
-		pill("A", "galaxy"),
-		pill("H", "history"),
-		pill("V", "vault"),
-		pill("?", "help"),
-		pill("q", "quit"),
-	}
-
-	// ── Assemble right-side hint string ───────────────────────────────────
-	allPills := append(contextGroup, sep)
-	allPills = append(allPills, globalGroup...)
-
-	// Hard-cap width so it never wraps.
-	maxHintW := a.width * 3 / 4
-	if maxHintW < 30 {
-		maxHintW = 30
-	}
-	hintRaw := strings.Join(allPills, "  ")
-	if lipgloss.Width(hintRaw) > maxHintW {
-		// Fall back to minimal set.
-		minimal := append(contextGroup[:min(len(contextGroup), 4)], sep)
-		minimal = append(minimal, pill("?", "help"), pill("q", "quit"))
-		hintRaw = strings.Join(minimal, "  ")
-	}
-
-	// ── Left: status message ───────────────────────────────────────────────
-	hintW := lipgloss.Width(hintRaw)
-	msgMaxW := a.width - hintW - 4
-	if msgMaxW < 0 {
-		msgMaxW = 0
-	}
-	msg := msgStyle.Render(truncateStr(a.statusMsg, msgMaxW))
-
-	gap := a.width - lipgloss.Width(msg) - hintW - 2
-	if gap < 1 {
-		gap = 1
-	}
-
-	bar := msg + strings.Repeat(" ", gap) + hintRaw
-	return lipgloss.NewStyle().
-		Background(lipgloss.Color("#111827")).
-		Width(a.width).
-		Render(bar)
-}
-
-func (a *App) helpContent() string {
-	// ── Styles ────────────────────────────────────────────────────────────────
-	sectionStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#7C3AED")).Bold(true)
-	keyStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#06B6D4")).Bold(true)
-	descStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#9CA3AF"))
-	dimStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#374151"))
-	colDivStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#374151"))
-
-	// row: fixed-width key badge + description, left-padded.
-	row := func(k, desc string) string {
-		return " " + keyStyle.Render(fmt.Sprintf("%-14s", k)) + descStyle.Render(desc)
-	}
-	blank := ""
-
-	// ── Column 1: Navigation + Inventory ──────────────────────────────────────
-	col1 := strings.Join([]string{
-		sectionStyle.Render(" Navigation"),
-		row("tab/shift+tab", "cycle panels"),
-		row("1 2 3 4", "jump to panel"),
-		row("j / k", "up / down"),
-		row("g / G", "top / bottom"),
-		blank,
-		sectionStyle.Render(" Inventory"),
-		row("enter", "set run limit"),
-		row("space", "expand / collapse"),
-		row("v", "variable browser"),
-		row("E", "edit vars in $EDITOR"),
-		row("!", "ad-hoc command"),
-		row("I", "reload inventory"),
-		row("N", "switch environment"),
-	}, "\n")
-
-	// ── Column 2: Playbooks + Logs ────────────────────────────────────────────
-	col2 := strings.Join([]string{
-		sectionStyle.Render(" Playbooks"),
-		row("r / enter", "run playbook"),
-		row("space", "view YAML source"),
-		row("E", "edit in $EDITOR"),
-		row("c", "--check mode"),
-		row("d", "--diff mode"),
-		row("t", "tags browser"),
-		row("e", "--extra-vars"),
-		row("L", "ansible-lint"),
-		blank,
-		sectionStyle.Render(" Logs"),
-		row("/", "search"),
-		row("n / N", "next / prev match"),
-		row("f", "filter by level"),
-		row("ctrl+d / ctrl+u", "half-page scroll"),
-		row("T", "toggle timestamps"),
-		row("ctrl+l", "clear"),
-		row("Z", "fullscreen toggle"),
-		row("X", "export → Markdown"),
-	}, "\n")
-
-	// ── Column 3: Run Control + Tools + Global ────────────────────────────────
-	col3 := strings.Join([]string{
-		sectionStyle.Render(" Run control"),
-		row("V", "vault password"),
-		row("H", "history browser"),
-		row("R", "retry failed hosts"),
-		blank,
-		sectionStyle.Render(" Tools"),
-		row("O", "role browser"),
-		row("P", "SSH profiles"),
-		row("A", "Ansible Galaxy"),
-		row("F", "run profiles"),
-		blank,
-		sectionStyle.Render(" Vars overlay"),
-		row("e", "edit vars file"),
-		blank,
-		sectionStyle.Render(" Global"),
-		row("?", "toggle help"),
-		row("q / ctrl+c", "quit"),
-		row("click", "focus panel"),
-	}, "\n")
-
-	// ── Sizing ────────────────────────────────────────────────────────────────
-	// Use up to 95% of terminal width, capped at 132 cols.
-	boxW := min(a.width-2, 132)
-	if boxW < 60 {
-		boxW = 60
-	}
-	// Each column gets a third of inner box width; dividers add 1 col each.
-	innerW := boxW - 6 // overlayBoxStyle has Padding(1,2) = 4 + border 2
-	colW := (innerW - 4) / 3
-
-	_ = colDivStyle // used via BorderForeground below
-	cols := lipgloss.JoinHorizontal(lipgloss.Top,
-		lipgloss.NewStyle().Width(colW).Render(col1),
-		lipgloss.NewStyle().
-			Width(1).PaddingLeft(1).PaddingRight(1).
-			BorderLeft(true).BorderRight(true).
-			BorderStyle(lipgloss.NormalBorder()).
-			BorderForeground(lipgloss.Color("#374151")).
-			Render(""),
-		lipgloss.NewStyle().Width(colW).Render(col2),
-		lipgloss.NewStyle().
-			Width(1).PaddingLeft(1).PaddingRight(1).
-			BorderLeft(true).BorderRight(true).
-			BorderStyle(lipgloss.NormalBorder()).
-			BorderForeground(lipgloss.Color("#374151")).
-			Render(""),
-		lipgloss.NewStyle().Width(colW).Render(col3),
-	)
-
-	// ── Header ────────────────────────────────────────────────────────────────
-	titleStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#06B6D4")).Bold(true)
-	versionStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#7C3AED"))
-	hintStyle2 := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#4B5563"))
-
-	title := titleStyle.Render("lazyansible ") +
-		versionStyle.Render("v"+version) +
-		titleStyle.Render(" — keyboard shortcuts")
-	subhint := hintStyle2.Render("press any key to close")
-	headerGap := boxW - 6 - lipgloss.Width(title) - lipgloss.Width(subhint)
-	if headerGap < 1 {
-		headerGap = 1
-	}
-	header := title + strings.Repeat(" ", headerGap) + subhint
-	divider := dimStyle.Render(strings.Repeat("─", boxW-6))
-
-	content := header + "\n" + divider + "\n" + cols
-
-	// ── Clip to terminal height so the title is never off-screen ─────────────
-	maxBoxH := a.height - 4
-	if maxBoxH < 10 {
-		maxBoxH = 10
-	}
-	content = clipLines(content, maxBoxH-2) // -2 for box border
-
-	return overlayBoxStyle.Width(boxW).Render(content)
-}
+func (a *App) renderStatusBar() string { return a.actionFooter() }
+func (a *App) helpContent() string     { return a.actionsHelp() }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 // inventoryBaseDir returns the directory containing the inventory file,
 // or the working directory if no inventory is configured.
 func inventoryBaseDir(cfg Config) string {
-	if cfg.InventoryPath != "" {
+	if cfg.InventoryPath != "" && !strings.Contains(cfg.InventoryPath, ",") {
 		return filepath.Dir(cfg.InventoryPath)
 	}
 	return cfg.WorkDir
@@ -1471,7 +1261,14 @@ func (a *App) updateFocus() {
 }
 
 func (a *App) resizePanels() {
-	available := a.height - 2
+	if a.workbench != nil {
+		a.syncWorkbenchLayout()
+	}
+	a.review.viewport.Width = max(1, a.width-2)
+	a.review.viewport.Height = max(1, a.height-7)
+	a.reflowReview()
+
+	available := a.height - 3
 	invW := a.width / 4
 	pbW := a.width / 4
 	statusW := a.width - invW - pbW
@@ -1515,194 +1312,23 @@ func (a *App) resizePanels() {
 	a.runProfilesOverlay.height = a.height
 	a.pbViewerOverlay.width = a.width
 	a.pbViewerOverlay.height = a.height
+	if a.width < 100 || a.height < 22 {
+		w, h := max(1, a.width), max(1, a.height-5)
+		a.invPanel.SetSize(w, h)
+		a.pbPanel.SetSize(w, h)
+		a.statusPanel.SetSize(w, h)
+		a.logsPanel.SetSize(w, h)
+	}
 }
 
 // ─── Run lifecycle ────────────────────────────────────────────────────────────
-
-func (a *App) startRun(req panels.RunRequestMsg) tea.Cmd {
-	if a.running {
-		a.statusMsg = "A run is already in progress"
-		return nil
-	}
-	if err := runner.CheckBinary(); err != nil {
-		a.statusMsg = err.Error()
-		return nil
-	}
-
-	a.running = true
-	a.retryHosts = nil
-	a.statusPanel.Reset()
-	a.statusPanel.SetRunning(true)
-	a.logsPanel.Clear()
-	a.statusMsg = fmt.Sprintf("Running %s…", req.Playbook.Name)
-
-	// Write vault password to temp file if set.
-	vaultFile := ""
-	if a.vaultPassword != "" {
-		f, err := vault.WriteTempPassword(a.vaultPassword)
-		if err == nil {
-			vaultFile = f
-			a.vaultPasswordFile = f
-		}
-	}
-
-	// Build run record.
-	a.runRecord = &history.Record{
-		ID:           fmt.Sprintf("%d", time.Now().UnixNano()),
-		Kind:         "playbook",
-		PlaybookName: req.Playbook.Name,
-		PlaybookPath: req.Playbook.Path,
-		Inventory:    a.config.InventoryPath,
-		Limit:        req.Limit,
-		Tags:         req.Tags,
-		ExtraVars:    a.extraVarsRaw,
-		CheckMode:    req.Check,
-		DiffMode:     req.Diff,
-		StartTime:    time.Now(),
-	}
-
-	ctx, cancel := context.WithCancel(a.ctx)
-	a.cancelRun = cancel
-
-	// Merge SSH profile vars with explicit extra-vars (explicit takes precedence).
-	mergedExtra := a.extraVarsRaw
-	if a.sshExtraVars != "" {
-		if mergedExtra != "" {
-			mergedExtra = a.sshExtraVars + " " + mergedExtra
-		} else {
-			mergedExtra = a.sshExtraVars
-		}
-	}
-
-	opts := core.RunOptions{
-		Playbook:          req.Playbook.Path,
-		Inventory:         a.config.InventoryPath,
-		Limit:             req.Limit,
-		Tags:              req.Tags,
-		CheckMode:         req.Check,
-		DiffMode:          req.Diff,
-		ExtraVarsRaw:      mergedExtra,
-		VaultPasswordFile: vaultFile,
-	}
-
-	// Echo the full command as the first log line so the user always knows
-	// exactly what is being executed.
-	a.logsPanel.AddLine(core.LogLine{
-		Text:      "$ " + runner.BuildPlaybookCommand(opts),
-		Level:     core.LogLevelCommand,
-		Timestamp: time.Now(),
-	})
-
-	sendFn := func(m tea.Msg) {
-		if a.program != nil {
-			a.program.Send(m)
-		}
-	}
-	return runner.StreamCmd(ctx, opts, sendFn)
-}
-
-func (a *App) startRunFromHistory(r *history.Record) tea.Cmd {
-	if a.running {
-		a.statusMsg = "A run is already in progress"
-		return nil
-	}
-	if err := runner.CheckBinary(); err != nil {
-		a.statusMsg = err.Error()
-		return nil
-	}
-
-	a.running = true
-	a.retryHosts = nil
-	a.statusPanel.Reset()
-	a.statusPanel.SetRunning(true)
-	a.logsPanel.Clear()
-	a.statusMsg = fmt.Sprintf("Re-running %s from history…", r.PlaybookName)
-
-	a.runRecord = &history.Record{
-		ID:           fmt.Sprintf("%d", time.Now().UnixNano()),
-		Kind:         "playbook",
-		PlaybookName: r.PlaybookName,
-		PlaybookPath: r.PlaybookPath,
-		Inventory:    r.Inventory,
-		Limit:        r.Limit,
-		Tags:         r.Tags,
-		ExtraVars:    r.ExtraVars,
-		CheckMode:    r.CheckMode,
-		DiffMode:     r.DiffMode,
-		StartTime:    time.Now(),
-	}
-
-	ctx, cancel := context.WithCancel(a.ctx)
-	a.cancelRun = cancel
-
-	opts := core.RunOptions{
-		Playbook:     r.PlaybookPath,
-		Inventory:    r.Inventory,
-		Limit:        r.Limit,
-		Tags:         r.Tags,
-		CheckMode:    r.CheckMode,
-		DiffMode:     r.DiffMode,
-		ExtraVarsRaw: r.ExtraVars,
-	}
-
-	sendFn := func(m tea.Msg) {
-		if a.program != nil {
-			a.program.Send(m)
-		}
-	}
-	return runner.StreamCmd(ctx, opts, sendFn)
-}
-
-func (a *App) startAdHoc(opts core.AdHocOptions) tea.Cmd {
-	if a.running {
-		a.statusMsg = "A run is already in progress"
-		return nil
-	}
-	if err := runner.CheckAdHocBinary(); err != nil {
-		a.statusMsg = err.Error()
-		return nil
-	}
-
-	a.running = true
-	a.statusPanel.Reset()
-	a.statusPanel.SetRunning(true)
-	a.logsPanel.Clear()
-	a.statusMsg = fmt.Sprintf("Ad-hoc: ansible %s -m %s", opts.Hosts, opts.Module)
-
-	a.runRecord = &history.Record{
-		ID:           fmt.Sprintf("%d", time.Now().UnixNano()),
-		Kind:         "adhoc",
-		PlaybookName: opts.Module,
-		Inventory:    opts.Inventory,
-		Limit:        opts.Hosts,
-		Module:       opts.Module,
-		Args:         opts.Args,
-		StartTime:    time.Now(),
-	}
-
-	ctx, cancel := context.WithCancel(a.ctx)
-	a.cancelRun = cancel
-
-	// Echo the full command as the first log line.
-	a.logsPanel.AddLine(core.LogLine{
-		Text:      "$ " + runner.BuildAdHocCommand(opts),
-		Level:     core.LogLevelCommand,
-		Timestamp: time.Now(),
-	})
-
-	sendFn := func(m tea.Msg) {
-		if a.program != nil {
-			a.program.Send(m)
-		}
-	}
-	return runner.AdHocStreamCmd(ctx, opts, sendFn)
-}
 
 func (a *App) handleRunFinished(msg runner.RunFinishedMsg) tea.Cmd {
 	a.running = false
 	a.statusPanel.SetRunning(false)
 	if a.cancelRun != nil {
 		a.cancelRun()
+		a.cancelRun = nil
 	}
 	a.cleanupVaultFile()
 	a.cleanupTempPlaybook()
@@ -1710,12 +1336,14 @@ func (a *App) handleRunFinished(msg runner.RunFinishedMsg) tea.Cmd {
 	// Collect failed hosts for retry.
 	a.retryHosts = a.statusPanel.FailedHosts()
 
-	// Persist history.
+	var finishCmds []tea.Cmd
+	// Persist history through an effect, reporting a failed save.
 	if a.runRecord != nil {
 		a.runRecord.EndTime = time.Now()
 		a.runRecord.ExitCode = msg.ExitCode
 		a.runRecord.HostStats = a.statusPanel.HostStatsMap()
-		go func(r *history.Record) { _ = history.Save(r) }(a.runRecord)
+		record := *a.runRecord
+		finishCmds = append(finishCmds, func() tea.Msg { return historySavedMsg{err: history.Save(&record)} })
 		a.runRecord = nil
 	}
 
@@ -1750,77 +1378,32 @@ func (a *App) handleRunFinished(msg runner.RunFinishedMsg) tea.Cmd {
 		})
 	}
 
-	return nil
-}
-
-// startRoleRun generates a temp playbook that applies the given role and runs it.
-func (a *App) startRoleRun(req RoleRunMsg) tea.Cmd {
-	if a.running {
-		a.statusMsg = "A run is already in progress"
-		return nil
-	}
-	if err := runner.CheckBinary(); err != nil {
-		a.statusMsg = err.Error()
-		return nil
-	}
-
-	hosts := req.Limit
-	tmpPB, err := GenerateTempPlaybook(req.RoleName, req.RolePath, hosts)
-	if err != nil {
-		a.statusMsg = "Failed to create temp playbook: " + err.Error()
-		return nil
-	}
-	a.tempPlaybook = tmpPB
-
-	a.running = true
-	a.retryHosts = nil
-	a.statusPanel.Reset()
-	a.statusPanel.SetRunning(true)
-	a.logsPanel.Clear()
-	a.statusMsg = fmt.Sprintf("Running role %s…", req.RoleName)
-
-	rolesDir := filepath.Dir(req.RolePath)
-	envVars := []string{"ANSIBLE_ROLES_PATH=" + rolesDir}
-
-	a.runRecord = &history.Record{
-		ID:           fmt.Sprintf("%d", time.Now().UnixNano()),
-		Kind:         "role",
-		PlaybookName: "role:" + req.RoleName,
-		PlaybookPath: tmpPB,
-		Inventory:    req.Inventory,
-		Limit:        hosts,
-		StartTime:    time.Now(),
-	}
-
-	ctx, cancel := context.WithCancel(a.ctx)
-	a.cancelRun = cancel
-
-	opts := core.RunOptions{
-		Playbook:  tmpPB,
-		Inventory: req.Inventory,
-		Limit:     hosts,
-		Env:       envVars,
-	}
-
-	sendFn := func(m tea.Msg) {
-		if a.program != nil {
-			a.program.Send(m)
+	if a.quitting {
+		return func() tea.Msg {
+			for _, cmd := range finishCmds {
+				if cmd != nil {
+					cmd()
+				}
+			}
+			return tea.Quit()
 		}
 	}
-	return runner.StreamCmd(ctx, opts, sendFn)
+	return tea.Batch(finishCmds...)
 }
 
 // switchInventory reloads the inventory from a new path.
 func (a *App) switchInventory(path string) tea.Cmd {
 	a.config.InventoryPath = path
 	a.statusMsg = "Switching to " + filepath.Base(path) + "…"
-	return func() tea.Msg {
-		inv, err := inventory.Parse(path)
-		if err != nil {
-			return errMsg{err: fmt.Errorf("parse inventory %s: %w", filepath.Base(path), err)}
-		}
-		return inventoryLoadedMsg{inv: inv, path: path}
-	}
+	return a.reloadProject()
+}
+
+func (a *App) reloadProject() tea.Cmd {
+	a.config.generation++
+	a.config.Runtime.WorkDir = a.config.WorkDir
+	galaxy.SetContext(a.projectContext(), a.config.Runtime)
+	a.workbench.generation++
+	return tea.Batch(loadInventoryCmd(a.config), loadPlaybooksCmd(a.config))
 }
 
 func (a *App) cleanupVaultFile() {
@@ -1869,16 +1452,16 @@ func loadInventoryCmd(cfg Config) tea.Cmd {
 						Hosts:  make(map[string]*core.Host),
 						Groups: make(map[string]*core.Group),
 					},
-					path: "",
+					path: "", generation: cfg.generation,
 				}
 			}
 			path = paths[0]
 		}
 		inv, err := inventory.Parse(path)
 		if err != nil {
-			return errMsg{err: fmt.Errorf("parse inventory %s: %w", filepath.Base(path), err)}
+			return errMsg{err: fmt.Errorf("parse inventory %s: %w", filepath.Base(path), err), generation: cfg.generation}
 		}
-		return inventoryLoadedMsg{inv: inv, path: path}
+		return inventoryLoadedMsg{inv: inv, path: path, generation: cfg.generation}
 	}
 }
 
@@ -1896,7 +1479,7 @@ func loadPlaybooksCmd(cfg Config) tea.Cmd {
 		}
 		pbs, err := inventory.DiscoverPlaybooks(dir)
 		if err != nil {
-			return errMsg{err: fmt.Errorf("discover playbooks: %w", err)}
+			return errMsg{err: fmt.Errorf("discover playbooks: %w", err), generation: cfg.generation}
 		}
 
 		// If nothing found, also search the parent directory for standard names.
@@ -1928,7 +1511,7 @@ func loadPlaybooksCmd(cfg Config) tea.Cmd {
 			}
 		}
 
-		return playbooksLoadedMsg{pbs: pbs}
+		return playbooksLoadedMsg{pbs: pbs, generation: cfg.generation}
 	}
 }
 
@@ -1939,30 +1522,51 @@ func checkGalaxyBinary() error {
 	return galaxy.CheckBinary()
 }
 
-// applyRunProfile loads a saved profile into the active run state.
-func (a *App) applyRunProfile(p runprofiles.Profile) {
-	// Switch inventory if specified and different.
-	if p.Inventory != "" && p.Inventory != a.config.InventoryPath {
-		_ = a.switchInventory(p.Inventory)
+// applyRunProfile replaces the draft and reloads the project as one operation.
+func (a *App) applyRunProfile(p runprofiles.Profile) tea.Cmd {
+	if a.running {
+		a.statusMsg = "Wait for the active run before changing profiles"
+		return nil
 	}
-	// Apply playbook selection by name.
-	if p.Playbook != "" {
-		a.pbPanel.SelectByName(p.Playbook)
+	if p.WorkDir != "" {
+		a.config.WorkDir = p.WorkDir
 	}
-	// Apply limit.
-	if p.Limit != "" {
-		a.pbPanel.SetLimit(p.Limit)
+	if filepath.IsAbs(p.Playbook) {
+		a.config.PlaybookDir = filepath.Dir(p.Playbook)
 	}
-	// Apply tags.
-	if len(p.Tags) > 0 {
-		a.pbPanel.SetActiveTags(strings.Join(p.Tags, ","))
-	} else {
-		a.pbPanel.SetActiveTags("")
-	}
-	// Apply extra-vars.
+	a.config.InventoryPath = p.Inventory
+	a.pbPanel.SetLimit(p.Limit)
+	a.pbPanel.SetActiveTags(strings.Join(p.Tags, ","))
 	a.extraVarsRaw = p.ExtraVars
 	a.pbPanel.SetExtraVars(p.ExtraVars)
-	// Apply modes.
 	a.pbPanel.SetCheckMode(p.CheckMode)
 	a.pbPanel.SetDiffMode(p.DiffMode)
+	a.profileNeedsSelection = true
+	a.pendingProfile = &p
+	a.statusMsg = "Loading profile: " + p.Name
+	return a.reloadProject()
+}
+func (a *App) selectProfilePlaybook(p runprofiles.Profile) {
+	if p.Playbook == "" {
+		return
+	}
+	if a.pbPanel.SelectByPath(p.Playbook) || a.pbPanel.SelectByNameUnique(p.Playbook) {
+		a.profileNeedsSelection = false
+		a.statusMsg = "Profile loaded: " + p.Name
+	} else {
+		a.profileNeedsSelection = true
+		a.statusMsg = "Profile target missing or ambiguous; navigate or Enter to explicitly select a playbook"
+	}
+}
+
+// Keep the UI alive until the owned child reports it has stopped and reaped.
+func (a *App) requestQuit() tea.Cmd {
+	a.Close()
+	if a.running || a.linting || a.runtimeBusy {
+		a.quitting = true
+		a.mode = AppModeNormal
+		a.statusMsg = "Cancelling active operation before exit…"
+		return nil
+	}
+	return tea.Quit
 }

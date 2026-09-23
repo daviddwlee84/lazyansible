@@ -8,7 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/kocierik/lazyansible/internal/galaxy"
+	"github.com/daviddwlee84/lazyansible/internal/galaxy"
 )
 
 // galaxyLoadedMsg is sent when the list of roles/collections has been fetched.
@@ -81,12 +81,29 @@ func newGalaxyOverlay(width, height int) *GalaxyOverlay {
 // It does NOT clear the install result so the user can still see it.
 func (g *GalaxyOverlay) Load() tea.Cmd {
 	g.loading = true
-	g.cursor = 0
 	return func() tea.Msg {
 		roles, rolesErr := galaxy.ListRoles()
 		cols, colsErr := galaxy.ListCollections()
 		return galaxyLoadedMsg{roles: roles, collections: cols, rolesErr: rolesErr, colsErr: colsErr}
 	}
+}
+
+func (g *GalaxyOverlay) HandleEscape() bool {
+	if g.filterActive {
+		g.filterActive = false
+		return true
+	}
+	if g.filterQuery != "" {
+		g.filterQuery = ""
+		g.cursor = 0
+		return true
+	}
+	if g.mode != galaxyModeList {
+		g.mode = galaxyModeList
+		g.input.Blur()
+		return true
+	}
+	return false
 }
 
 func (g *GalaxyOverlay) currentList() []galaxy.Item {
@@ -116,6 +133,11 @@ func (g *GalaxyOverlay) filteredList() []galaxy.Item {
 func (g *GalaxyOverlay) Update(msg tea.Msg) tea.Cmd {
 	switch m := msg.(type) {
 	case galaxyLoadedMsg:
+		selectedName := ""
+		previous := g.filteredList()
+		if g.cursor >= 0 && g.cursor < len(previous) {
+			selectedName = previous[g.cursor].Name
+		}
 		g.loading = false
 		g.roles = m.roles
 		g.cols = m.collections
@@ -128,8 +150,12 @@ func (g *GalaxyOverlay) Update(msg tea.Msg) tea.Cmd {
 			g.colsErr = m.colsErr.Error()
 		}
 		// After loading, if we just finished an install switch to result view.
-		if g.mode != galaxyModeResult {
-			g.mode = galaxyModeList
+		g.cursor = max(0, min(g.cursor, len(g.filteredList())-1))
+		for i, item := range g.filteredList() {
+			if item.Name == selectedName {
+				g.cursor = i
+				break
+			}
 		}
 		return nil
 
@@ -170,11 +196,12 @@ func (g *GalaxyOverlay) updateList(key tea.KeyMsg) tea.Cmd {
 		switch key.String() {
 		case "esc":
 			g.filterActive = false
-			g.filterQuery = ""
-			g.cursor = 0
-		case "enter":
+		case "enter", "ctrl+c":
 			g.filterActive = false
-			g.cursor = 0
+		case "up":
+			g.cursor = max(0, g.cursor-1)
+		case "down":
+			g.cursor = min(g.cursor+1, max(0, len(g.filteredList())-1))
 		case "backspace", "ctrl+h":
 			if len(g.filterQuery) > 0 {
 				runes := []rune(g.filterQuery)
@@ -182,7 +209,7 @@ func (g *GalaxyOverlay) updateList(key tea.KeyMsg) tea.Cmd {
 				g.cursor = 0
 			}
 		default:
-			if key.Type == tea.KeyRunes {
+			if key.Type == tea.KeyRunes || key.String() == " " {
 				g.filterQuery += key.String()
 				g.cursor = 0
 			}
@@ -195,9 +222,9 @@ func (g *GalaxyOverlay) updateList(key tea.KeyMsg) tea.Cmd {
 	switch key.String() {
 	case "/":
 		g.filterActive = true
-		g.filterQuery = ""
-		g.cursor = 0
-	case "tab":
+	case "esc":
+		g.HandleEscape()
+	case "tab", "shift+tab", "h", "l", "left", "right":
 		if g.tab == galaxyTabRoles {
 			g.tab = galaxyTabCollections
 		} else {
@@ -214,19 +241,23 @@ func (g *GalaxyOverlay) updateList(key tea.KeyMsg) tea.Cmd {
 		if g.cursor > 0 {
 			g.cursor--
 		}
-	case "g":
+	case "g", "home":
 		g.cursor = 0
-	case "G":
+	case "G", "end":
 		if len(list) > 0 {
 			g.cursor = len(list) - 1
 		}
 	case "i":
+		if g.loading {
+			return nil
+		}
 		g.mode = galaxyModeInstall
 		g.input.SetValue("")
 		g.input.Focus()
 	case "r":
-		g.filterQuery = ""
-		g.filterActive = false
+		if g.loading {
+			return nil
+		}
 		return g.Load()
 	}
 	return nil
@@ -278,9 +309,9 @@ func (g *GalaxyOverlay) updateResult(key tea.KeyMsg) tea.Cmd {
 		if g.resultScroll > 0 {
 			g.resultScroll--
 		}
-	case "g":
+	case "g", "home":
 		g.resultScroll = 0
-	case "G":
+	case "G", "end":
 		g.resultScroll = maxScroll
 	case "q", "enter", "esc", " ":
 		g.mode = galaxyModeList
@@ -289,8 +320,8 @@ func (g *GalaxyOverlay) updateResult(key tea.KeyMsg) tea.Cmd {
 }
 
 func (g *GalaxyOverlay) View() string {
-	boxW := min(g.width-6, 82)
-	boxH := min(g.height-4, 34)
+	boxW := max(1, min(g.width-6, 82))
+	boxH := max(1, min(g.height-4, 34))
 
 	var sb strings.Builder
 
@@ -325,7 +356,7 @@ func (g *GalaxyOverlay) View() string {
 		sb.WriteString(overlayMutedStyle.Render(example) + "\n")
 		sb.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#4B5563")).Render("runs: "+cmd) + "\n\n")
 		sb.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#F59E0B")).Render(note) + "\n\n")
-		sb.WriteString(overlayHintStyle.Render("[enter] install  [tab] switch to Collections tab  [esc] cancel"))
+		sb.WriteString(overlayHintStyle.Render("[enter] install  [esc] cancel"))
 		return overlayBoxStyle.Width(boxW).Height(boxH).Render(sb.String())
 	}
 
@@ -396,7 +427,7 @@ func (g *GalaxyOverlay) View() string {
 
 		header := fmt.Sprintf("  %-38s  %s", "Name", "Version")
 		sb.WriteString(overlayLabelStyle.Render(header) + "\n")
-		sb.WriteString(overlayMutedStyle.Render(strings.Repeat("─", min(boxW-6, 62))) + "\n")
+		sb.WriteString(overlayMutedStyle.Render(strings.Repeat("─", max(0, min(boxW-6, 62)))) + "\n")
 
 		for i := start; i < end; i++ {
 			item := list[i]

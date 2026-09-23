@@ -14,20 +14,20 @@ type TagsConfirmedMsg struct{ Tags string }
 
 // TagsOverlay shows the available tags for a playbook with multi-select.
 type TagsOverlay struct {
-	allTags  []string // full list
-	visible  []string // filtered list
-	selected map[string]bool
-	cursor   int
-	filter   textinput.Model
-	width    int
-	height   int
+	allTags   []string // full list
+	visible   []string // filtered list
+	selected  map[string]bool
+	cursor    int
+	filter    textinput.Model
+	filtering bool
+	width     int
+	height    int
 }
 
 func newTagsOverlay(width, height int) *TagsOverlay {
 	ti := textinput.New()
 	ti.Placeholder = "filter tags…"
 	ti.Width = 30
-	ti.Focus()
 
 	return &TagsOverlay{
 		selected: make(map[string]bool),
@@ -41,6 +41,8 @@ func (t *TagsOverlay) SetTags(tags []string) {
 	t.allTags = tags
 	t.selected = make(map[string]bool)
 	t.filter.SetValue("")
+	t.filtering = false
+	t.filter.Blur()
 	t.cursor = 0
 	t.applyFilter()
 }
@@ -53,8 +55,30 @@ func (t *TagsOverlay) applyFilter() {
 			t.visible = append(t.visible, tag)
 		}
 	}
-	if t.cursor >= len(t.visible) && len(t.visible) > 0 {
-		t.cursor = len(t.visible) - 1
+	t.cursor = max(0, min(t.cursor, len(t.visible)-1))
+}
+
+// HandleEscape closes the nearest filter interaction before the overlay.
+func (t *TagsOverlay) HandleEscape() bool {
+	if t.filtering {
+		t.filtering = false
+		t.filter.Blur()
+		return true
+	}
+	if t.filter.Value() != "" {
+		t.filter.SetValue("")
+		t.applyFilter()
+		return true
+	}
+	return false
+}
+
+func (t *TagsOverlay) SetSelectedTags(tags string) {
+	t.selected = make(map[string]bool)
+	for _, tag := range strings.Split(tags, ",") {
+		if tag = strings.TrimSpace(tag); tag != "" {
+			t.selected[tag] = true
+		}
 	}
 }
 
@@ -71,17 +95,48 @@ func (t *TagsOverlay) SelectedTagsString() string {
 
 func (t *TagsOverlay) Update(msg tea.Msg) tea.Cmd {
 	key, ok := msg.(tea.KeyMsg)
-	if !ok {
+	if t.filtering {
+		if ok {
+			switch key.String() {
+			case "enter", "esc", "tab", "ctrl+c":
+				t.filtering = false
+				t.filter.Blur()
+				return nil
+			case "down":
+				t.cursor = min(t.cursor+1, max(0, len(t.visible)-1))
+				return nil
+			case "up":
+				t.cursor = max(0, t.cursor-1)
+				return nil
+			}
+		}
 		var cmd tea.Cmd
+		previous := t.filter.Value()
 		t.filter, cmd = t.filter.Update(msg)
-		t.applyFilter()
+		if previous != t.filter.Value() {
+			t.cursor = 0
+			t.applyFilter()
+		}
 		return cmd
+	}
+	if !ok {
+		return nil
 	}
 
 	switch key.String() {
+	case "/":
+		t.filtering = true
+		return t.filter.Focus()
+	case "esc":
+		t.HandleEscape()
+	case "g", "home":
+		t.cursor = 0
+	case "G", "end":
+		t.cursor = max(0, len(t.visible)-1)
 	case "enter":
+		selected := t.SelectedTagsString()
 		return func() tea.Msg {
-			return TagsConfirmedMsg{Tags: t.SelectedTagsString()}
+			return TagsConfirmedMsg{Tags: selected}
 		}
 	case "j", "down":
 		if t.cursor < len(t.visible)-1 {
@@ -109,17 +164,13 @@ func (t *TagsOverlay) Update(msg tea.Msg) tea.Cmd {
 		// Deselect all.
 		t.selected = make(map[string]bool)
 		return nil
-	default:
-		var cmd tea.Cmd
-		t.filter, cmd = t.filter.Update(msg)
-		t.applyFilter()
-		return cmd
 	}
+	return nil
 }
 
 func (t *TagsOverlay) View() string {
-	boxW := min(t.width-8, 60)
-	boxH := min(t.height-6, 28)
+	boxW := max(1, min(t.width-8, 60))
+	boxH := max(1, min(t.height-6, 28))
 
 	var sb strings.Builder
 	sb.WriteString(overlayTitleStyle.Render("Tags Browser") + "\n")
@@ -167,7 +218,11 @@ func (t *TagsOverlay) View() string {
 			lipgloss.NewStyle().Foreground(lipgloss.Color("#22C55E")).Render(sel) + "\n")
 	}
 
-	sb.WriteString("\n" + overlayHintStyle.Render("[space] toggle  [a] all  [A] none  [enter] confirm  [esc] cancel"))
+	hint := "[/] filter  [space] toggle  [a/A] all/none  [enter] confirm  [esc] back"
+	if t.filtering {
+		hint = "Type to filter  [↑/↓] select  [enter/esc] return to list"
+	}
+	sb.WriteString("\n" + overlayHintStyle.Render(hint))
 
 	return overlayBoxStyle.
 		Width(boxW).

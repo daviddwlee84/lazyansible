@@ -6,10 +6,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/kocierik/lazyansible/internal/core"
+	"github.com/daviddwlee84/lazyansible/internal/core"
 )
 
-// RunRequestMsg is sent when the user presses Enter on a playbook.
+// RunRequestMsg asks the root model to review a run; it never starts a process.
 type RunRequestMsg struct {
 	Playbook *core.Playbook
 	Limit    string
@@ -18,13 +18,17 @@ type RunRequestMsg struct {
 	Tags     string
 }
 
+type ViewPlaybookMsg struct{ Playbook *core.Playbook }
+
 // PlaybooksPanel lists discovered playbooks and tracks run options.
 type PlaybooksPanel struct {
-	playbooks []*core.Playbook
-	cursor    int
-	focused   bool
-	width     int
-	height    int
+	playbooks    []*core.Playbook
+	allPlaybooks []*core.Playbook
+	cursor       int
+	focused      bool
+	width        int
+	height       int
+	filter       listFilter
 
 	checkMode    bool
 	diffMode     bool
@@ -34,20 +38,44 @@ type PlaybooksPanel struct {
 }
 
 func NewPlaybooksPanel(playbooks []*core.Playbook, width, height int) *PlaybooksPanel {
-	return &PlaybooksPanel{playbooks: playbooks, width: width, height: height}
+	return &PlaybooksPanel{playbooks: playbooks, allPlaybooks: playbooks, width: width, height: height, filter: newListFilter()}
 }
 
-func (p *PlaybooksPanel) SetSize(w, h int)                  { p.width = w; p.height = h }
-func (p *PlaybooksPanel) SetFocused(f bool)                 { p.focused = f }
-func (p *PlaybooksPanel) SetPlaybooks(pbs []*core.Playbook) { p.playbooks = pbs }
-func (p *PlaybooksPanel) SetLimit(limit string)             { p.limit = limit }
-func (p *PlaybooksPanel) SetActiveTags(tags string)         { p.activeTags = tags }
-func (p *PlaybooksPanel) SetExtraVars(raw string)           { p.extraVarsRaw = raw }
-func (p *PlaybooksPanel) SetCheckMode(v bool)               { p.checkMode = v }
-func (p *PlaybooksPanel) SetDiffMode(v bool)                { p.diffMode = v }
-func (p *PlaybooksPanel) CurrentLimit() string              { return p.limit }
-func (p *PlaybooksPanel) CheckMode() bool                   { return p.checkMode }
-func (p *PlaybooksPanel) DiffMode() bool                    { return p.diffMode }
+func (p *PlaybooksPanel) SetSize(w, h int)   { p.width = w; p.height = h }
+func (p *PlaybooksPanel) SetFocused(f bool)  { p.focused = f }
+func (p *PlaybooksPanel) FilterActive() bool { return p.filter.active }
+func (p *PlaybooksPanel) SetPlaybooks(pbs []*core.Playbook) {
+	selected := p.SelectedPlaybook()
+	p.allPlaybooks = pbs
+	p.applyFilter()
+	if selected != nil {
+		for i, pb := range p.playbooks {
+			if pb.Path == selected.Path {
+				p.cursor = i
+				break
+			}
+		}
+	}
+}
+
+func (p *PlaybooksPanel) applyFilter() {
+	p.playbooks = nil
+	q := p.filter.query()
+	for _, pb := range p.allPlaybooks {
+		if pb != nil && (q == "" || strings.Contains(strings.ToLower(pb.Name+" "+pb.Path), q)) {
+			p.playbooks = append(p.playbooks, pb)
+		}
+	}
+	p.cursor = clampCursor(p.cursor, len(p.playbooks))
+}
+func (p *PlaybooksPanel) SetLimit(limit string)     { p.limit = limit }
+func (p *PlaybooksPanel) SetActiveTags(tags string) { p.activeTags = tags }
+func (p *PlaybooksPanel) SetExtraVars(raw string)   { p.extraVarsRaw = raw }
+func (p *PlaybooksPanel) SetCheckMode(v bool)       { p.checkMode = v }
+func (p *PlaybooksPanel) SetDiffMode(v bool)        { p.diffMode = v }
+func (p *PlaybooksPanel) CurrentLimit() string      { return p.limit }
+func (p *PlaybooksPanel) CheckMode() bool           { return p.checkMode }
+func (p *PlaybooksPanel) DiffMode() bool            { return p.diffMode }
 
 // SelectedTags returns the active tags as a slice (split by comma).
 func (p *PlaybooksPanel) SelectedTags() []string {
@@ -65,16 +93,40 @@ func (p *PlaybooksPanel) SelectedTags() []string {
 
 // SelectByName moves the cursor to the playbook whose name matches.
 func (p *PlaybooksPanel) SelectByName(name string) {
-	for i, pb := range p.playbooks {
+	p.SelectByNameUnique(name)
+}
+
+func (p *PlaybooksPanel) SelectByNameUnique(name string) bool {
+	var match *core.Playbook
+	for _, pb := range p.allPlaybooks {
 		if pb.Name == name {
-			p.cursor = i
-			return
+			if match != nil {
+				return false
+			}
+			match = pb
 		}
 	}
+	return match != nil && p.SelectByPath(match.Path)
+}
+
+func (p *PlaybooksPanel) SelectByPath(path string) bool {
+	for _, pb := range p.allPlaybooks {
+		if pb.Path == path {
+			p.filter.input.SetValue("")
+			p.applyFilter()
+			for i, visible := range p.playbooks {
+				if visible.Path == path {
+					p.cursor = i
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func (p *PlaybooksPanel) SelectedPlaybook() *core.Playbook {
-	if p.cursor < len(p.playbooks) {
+	if p.cursor >= 0 && p.cursor < len(p.playbooks) {
 		return p.playbooks[p.cursor]
 	}
 	return nil
@@ -84,11 +136,37 @@ func (p *PlaybooksPanel) Update(msg tea.Msg) tea.Cmd {
 	if !p.focused {
 		return nil
 	}
+	if p.filter.active {
+		if key, ok := msg.(tea.KeyMsg); ok && (key.String() == "up" || key.String() == "down") {
+			if key.String() == "up" {
+				p.cursor--
+			} else {
+				p.cursor++
+			}
+			p.cursor = clampCursor(p.cursor, len(p.playbooks))
+			return nil
+		}
+		changed, cmd := p.filter.update(msg)
+		if changed {
+			p.cursor = 0
+			p.applyFilter()
+		}
+		return cmd
+	}
 	key, ok := msg.(tea.KeyMsg)
 	if !ok {
 		return nil
 	}
 	switch key.String() {
+	case "/":
+		return p.filter.open()
+	case "esc":
+		selected := p.SelectedPlaybook()
+		p.filter.input.SetValue("")
+		p.applyFilter()
+		if selected != nil {
+			p.SelectByPath(selected.Path)
+		}
 	case "j", "down":
 		if p.cursor < len(p.playbooks)-1 {
 			p.cursor++
@@ -97,9 +175,9 @@ func (p *PlaybooksPanel) Update(msg tea.Msg) tea.Cmd {
 		if p.cursor > 0 {
 			p.cursor--
 		}
-	case "g":
+	case "g", "home":
 		p.cursor = 0
-	case "G":
+	case "G", "end":
 		if len(p.playbooks) > 0 {
 			p.cursor = len(p.playbooks) - 1
 		}
@@ -107,16 +185,15 @@ func (p *PlaybooksPanel) Update(msg tea.Msg) tea.Cmd {
 		p.checkMode = !p.checkMode
 	case "d":
 		p.diffMode = !p.diffMode
-	case "enter", "r":
+	case "enter", " ":
 		if pb := p.SelectedPlaybook(); pb != nil {
+			return func() tea.Msg { return ViewPlaybookMsg{Playbook: pb} }
+		}
+	case "r":
+		if pb := p.SelectedPlaybook(); pb != nil {
+			request := RunRequestMsg{Playbook: pb, Limit: p.limit, Check: p.checkMode, Diff: p.diffMode, Tags: p.activeTags}
 			return func() tea.Msg {
-				return RunRequestMsg{
-					Playbook: pb,
-					Limit:    p.limit,
-					Check:    p.checkMode,
-					Diff:     p.diffMode,
-					Tags:     p.activeTags,
-				}
+				return request
 			}
 		}
 	}
@@ -124,11 +201,16 @@ func (p *PlaybooksPanel) Update(msg tea.Msg) tea.Cmd {
 }
 
 func (p *PlaybooksPanel) View() string {
+	filterView := p.filter.view(p.width)
 	if len(p.playbooks) == 0 {
-		return mutedText("No playbooks found.\nPlace *.yml files in your project directory.")
+		if p.filter.query() != "" {
+			return clipWidth(filterView+mutedText("No matching playbooks."), p.width)
+		}
+		return clipWidth(filterView+mutedText("No playbooks found.\nPlace *.yml files in your project directory."), p.width)
 	}
 
 	var sb strings.Builder
+	sb.WriteString(filterView)
 
 	// ── Active option badges ───────────────────────────────────────────────
 	var badges []string
@@ -156,6 +238,9 @@ func (p *PlaybooksPanel) View() string {
 	// Reserve space for the detail block of the selected item.
 	detailLines := 2 // hosts row + tags/path row for selected item
 	contentH := p.height - 4 - len(badges) - detailLines
+	if filterView != "" {
+		contentH--
+	}
 	if contentH < 1 {
 		contentH = 1
 	}
@@ -196,16 +281,13 @@ func (p *PlaybooksPanel) View() string {
 				sb.WriteString(pbTagLineStyle.Render("  tags: "+tagStr) + "\n")
 			} else {
 				// Show short path hint when no tags.
-				shortPath := pb.Path
-				if len(shortPath) > p.width-10 {
-					shortPath = "…" + shortPath[len(shortPath)-(p.width-11):]
-				}
+				shortPath := truncateBadge(pb.Path, p.width-2)
 				sb.WriteString(pbPathStyle.Render("  "+shortPath) + "\n")
 			}
 		} else {
 			// ── Normal row: name + hosts summary on one line ──────────────
 			hostsHint := ""
-			if len(pb.Hosts) > 0 {
+			if len(pb.Hosts) > 0 && p.width >= 30 {
 				labels := make([]string, 0, len(pb.Hosts))
 				for _, h := range pb.Hosts {
 					labels = append(labels, cleanHost(h))
@@ -216,12 +298,12 @@ func (p *PlaybooksPanel) View() string {
 			}
 			name := lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#9CA3AF")).
-				Render("  " + truncateBadge(pb.Name, p.width-20))
+				Render("  " + truncateBadge(pb.Name, p.width-2-lipgloss.Width(hostsHint)))
 			sb.WriteString(name + hostsHint + "\n")
 		}
 	}
 
-	return sb.String()
+	return clipWidth(sb.String(), p.width)
 }
 
 // cleanHost converts a raw Ansible hosts value into a human-friendly label.
@@ -248,11 +330,7 @@ func cleanHost(h string) string {
 }
 
 func truncateBadge(s string, max int) string {
-	r := []rune(s)
-	if len(r) <= max {
-		return s
-	}
-	return string(r[:max-1]) + "…"
+	return cellTruncate(s, max)
 }
 
 var (

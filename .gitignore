@@ -10,7 +10,7 @@ RELEASE.md
 scripts/
 examples/
 # Local Ansible test environment (not part of the distributed project)
-ansible/
+/ansible/
 
 # Go
 *.test

@@ -1,11 +1,26 @@
 # Changelog
 
-All notable changes to lazyansible are documented here.
+Changes to this permanent personal fork appear under Unreleased. Older version
+sections preserve the upstream project history and are not fork releases.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
 ## [Unreleased]
+
+### Added
+- XDG preferences/profiles, private history state, update cache, legacy read fallback, and effective config commands.
+- Arrow/Vim navigation, searchable action palette, inventory/config inspectors, and reviewed playbook/ad-hoc/role execution through shared CLI/TUI services.
+- Shared uv Ansible ownership/status, cached update observations, and explicit targeted install/upgrade commands.
+- Read-only JSON observations and dry-run plans, noninteractive execution with `--yes`, explicit project cwd, and child exit-code propagation.
+- Isolated fixtures, real PTY smoke coverage, agent guidance, and a structured future-work index.
+
+### Changed
+- This checkout is the `daviddwlee84/lazyansible` personal fork. Source trial/rebuild replaces inherited upstream package-channel recommendations.
+- macOS uses XDG paths. Explicit false flags override preferences. Config initialization never overwrites an existing file.
+- Managed executions use the default stdout callback only for the child process; the project's `ansible.cfg` is unchanged.
+- History excludes sensitive inputs and requires reconfiguration before replay when inputs or original project context are unavailable.
+- CI reads its Go version from go.mod. Release automation is manual snapshot building only; upstream tap, Scoop, and AUR publishing targets are removed.
 
 ### Fixed
 - Auto-discovered inventory path is now stored and passed to Ansible as **`-i`** (runs from the TUI no longer omit the inventory file)

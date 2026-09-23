@@ -7,7 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/kocierik/lazyansible/internal/core"
+	"github.com/daviddwlee84/lazyansible/internal/core"
 )
 
 // AdHocRunMsg is sent when the user confirms an ad-hoc command.
@@ -87,8 +87,15 @@ func (a *AdHocOverlay) Update(msg tea.Msg) tea.Cmd {
 		// Space on the become row toggles it.
 		if a.focusIdx == 2 {
 			a.become = !a.become
+			return nil
 		}
-		return nil
+		var cmd tea.Cmd
+		if a.focusIdx == 0 {
+			a.moduleInput, cmd = a.moduleInput.Update(key)
+		} else {
+			a.argsInput, cmd = a.argsInput.Update(key)
+		}
+		return cmd
 	case "enter":
 		if a.focusIdx == 2 {
 			// On the become row, Enter also toggles.
@@ -119,7 +126,7 @@ func (a *AdHocOverlay) Update(msg tea.Msg) tea.Cmd {
 }
 
 func (a *AdHocOverlay) View() string {
-	boxW := min(a.width-8, 60)
+	boxW := max(1, min(a.width-8, 60))
 
 	target := a.target
 	if target == "" {
@@ -164,7 +171,7 @@ func (a *AdHocOverlay) View() string {
 	}
 	sb.WriteString(becomeLabel + becomeVal + "\n\n")
 
-	sb.WriteString(overlayHintStyle.Render("[tab] switch  [space/enter] toggle become  [enter on run fields] run  [esc] cancel"))
+	sb.WriteString(overlayHintStyle.Render("[tab] switch  [space/enter] toggle become  [enter on fields] review  [esc] cancel"))
 
 	return overlayBoxStyle.
 		Width(boxW).

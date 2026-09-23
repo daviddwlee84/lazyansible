@@ -4,9 +4,16 @@ package galaxy
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
+	"fmt"
+	"os"
 	"os/exec"
 	"strings"
+	"sync"
+	"time"
+
+	"github.com/daviddwlee84/lazyansible/internal/ansible"
 )
 
 // Item represents a role or collection returned by list/search.
@@ -16,24 +23,60 @@ type Item struct {
 	Description string
 }
 
-// CheckBinary returns an error if ansible-galaxy is not in $PATH.
-func CheckBinary() error {
-	if _, err := exec.LookPath("ansible-galaxy"); err != nil {
-		return errors.New("ansible-galaxy not found in PATH")
-	}
-	return nil
+var operationContext struct {
+	sync.RWMutex
+	project ansible.ProjectContext
+	runtime ansible.RuntimeOptions
 }
 
-// runStdout runs a command and returns only its stdout.
-// Stderr is captured separately so warnings never pollute the parsed output.
-// Returns (stdout, stderr, error).
+// SetContext selects the same project and installation used by the workbench.
+// Operations snapshot it so changing profiles cannot alter an in-flight call.
+func SetContext(project ansible.ProjectContext, runtime ansible.RuntimeOptions) {
+	operationContext.Lock()
+	defer operationContext.Unlock()
+	operationContext.project, operationContext.runtime = project, runtime
+}
+
+func commandSpec(ctx context.Context, args []string) (ansible.CommandSpec, error) {
+	operationContext.RLock()
+	project, options := operationContext.project, operationContext.runtime
+	operationContext.RUnlock()
+	if options.Executable == "" {
+		options.Executable = project.Executable
+	}
+	runtime, err := ansible.Resolve(ctx, options)
+	if err != nil {
+		return ansible.CommandSpec{}, err
+	}
+	binary, err := ansible.Companion("ansible-galaxy", runtime.Executable)
+	if err != nil {
+		return ansible.CommandSpec{}, err
+	}
+	if project.WorkDir == "" {
+		project.WorkDir, err = os.Getwd()
+		if err != nil {
+			return ansible.CommandSpec{}, err
+		}
+	}
+	return ansible.CommandSpec{Executable: binary, Args: args, Dir: project.WorkDir}, nil
+}
+
+// CheckBinary verifies the selected runtime, including configured executables.
+func CheckBinary() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	_, err := commandSpec(ctx, nil)
+	return err
+}
+
 func runStdout(args ...string) ([]byte, string, error) {
-	cmd := exec.Command(args[0], args[1:]...)
-	var outBuf, errBuf bytes.Buffer
-	cmd.Stdout = &outBuf
-	cmd.Stderr = &errBuf
-	err := cmd.Run()
-	return outBuf.Bytes(), errBuf.String(), err
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	spec, err := commandSpec(ctx, args[1:])
+	if err != nil {
+		return nil, "", err
+	}
+	return ansible.Observe(ctx, spec, 20*time.Second)
 }
 
 // isBenignError reports whether the error (and the stderr text) should be
@@ -44,7 +87,8 @@ func isBenignError(err error, stderr string) bool {
 	if err == nil {
 		return true
 	}
-	if ee, ok := err.(*exec.ExitError); ok {
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
 		code := ee.ExitCode()
 		if code == 5 || code == 6 {
 			return true
@@ -133,16 +177,28 @@ func parseCollectionList(data []byte) []Item {
 	return items
 }
 
-// InstallRole runs ansible-galaxy role install <name> and returns combined output.
-func InstallRole(name string) (string, error) {
-	cmd := exec.Command("ansible-galaxy", "role", "install", name)
-	out, err := cmd.CombinedOutput()
-	return string(out), err
-}
+// InstallRole installs in the selected project using its active runtime.
+func InstallRole(name string) (string, error) { return install("role", name) }
 
-// InstallCollection runs ansible-galaxy collection install <name> and returns combined output.
-func InstallCollection(name string) (string, error) {
-	cmd := exec.Command("ansible-galaxy", "collection", "install", name)
-	out, err := cmd.CombinedOutput()
-	return string(out), err
+// InstallCollection installs in the selected project using its active runtime.
+func InstallCollection(name string) (string, error) { return install("collection", name) }
+
+func install(kind, name string) (string, error) {
+	if strings.TrimSpace(name) == "" || strings.HasPrefix(name, "-") {
+		return "", fmt.Errorf("a valid %s name is required", kind)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	spec, err := commandSpec(ctx, []string{kind, "install", name})
+	if err != nil {
+		return "", err
+	}
+	var output strings.Builder
+	_, err = ansible.Execute(ctx, ansible.RunPlan{Command: spec}, func(event ansible.Event) {
+		if output.Len() < 4<<20 {
+			output.WriteString(event.Line)
+			output.WriteByte('\n')
+		}
+	})
+	return output.String(), err
 }

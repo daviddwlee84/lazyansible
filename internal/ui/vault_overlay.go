@@ -7,7 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/kocierik/lazyansible/internal/vault"
+	"github.com/daviddwlee84/lazyansible/internal/vault"
 )
 
 // VaultPasswordMsg is sent when the user confirms the vault password.
@@ -68,7 +68,7 @@ func (v *VaultOverlay) Update(msg tea.Msg) tea.Cmd {
 }
 
 func (v *VaultOverlay) View() string {
-	boxW := min(v.width-8, 60)
+	boxW := max(1, min(v.width-8, 60))
 
 	var sb strings.Builder
 	sb.WriteString(overlayTitleStyle.Render("Ansible Vault") + "\n\n")

@@ -4,13 +4,15 @@ package runprofiles
 import (
 	"encoding/json"
 	"os"
-	"path/filepath"
 	"time"
+
+	"github.com/daviddwlee84/lazyansible/internal/paths"
 )
 
 // Profile stores a complete run configuration that can be recalled quickly.
 type Profile struct {
 	Name      string    `json:"name"`
+	WorkDir   string    `json:"work_dir,omitempty"`
 	Playbook  string    `json:"playbook"`   // path or name
 	Limit     string    `json:"limit"`      // --limit value
 	Tags      []string  `json:"tags"`       // selected tags
@@ -22,18 +24,11 @@ type Profile struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-func storePath() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = "."
-	}
-	return filepath.Join(home, ".lazyansible", "run-profiles.json")
-}
+func storePath() string { return paths.Join(paths.ConfigDir(), "run-profiles.json") }
 
 // Load reads all profiles from disk.
 func Load() ([]Profile, error) {
-	p := storePath()
-	data, err := os.ReadFile(p)
+	data, err := paths.ReadConfigFile("run-profiles.json")
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
@@ -50,14 +45,11 @@ func Load() ([]Profile, error) {
 // Save writes all profiles to disk, creating the directory if needed.
 func Save(profiles []Profile) error {
 	p := storePath()
-	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
-		return err
-	}
 	data, err := json.MarshalIndent(profiles, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(p, data, 0o600)
+	return paths.WriteFile(p, data)
 }
 
 // Upsert adds or replaces a profile by name.

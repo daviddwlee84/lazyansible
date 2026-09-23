@@ -9,7 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/kocierik/lazyansible/internal/core"
+	"github.com/daviddwlee84/lazyansible/internal/core"
 )
 
 // StatusPanel shows per-host execution status.
@@ -43,6 +43,7 @@ func (p *StatusPanel) SetRunning(running bool) {
 }
 
 func (p *StatusPanel) UpdateHost(host string, status core.TaskStatus, task string) {
+	selected := p.SelectedHost()
 	if _, ok := p.results[host]; !ok {
 		p.order = append(p.order, host)
 		p.results[host] = &core.HostResult{Host: host}
@@ -51,12 +52,35 @@ func (p *StatusPanel) UpdateHost(host string, status core.TaskStatus, task strin
 	r.Status = status
 	r.TaskName = task
 	r.ChangedAt = time.Now()
+	for i, name := range p.sortedHosts() {
+		if name == selected {
+			p.cursor = i
+			break
+		}
+	}
 }
 
 func (p *StatusPanel) Reset() {
 	p.results = make(map[string]*core.HostResult)
 	p.order = nil
 	p.running = false
+	p.cursor = 0
+}
+
+func (p *StatusPanel) sortedHosts() []string {
+	hosts := append([]string(nil), p.order...)
+	sort.SliceStable(hosts, func(i, j int) bool {
+		return statusPriority(p.results[hosts[i]].Status) < statusPriority(p.results[hosts[j]].Status)
+	})
+	return hosts
+}
+
+func (p *StatusPanel) SelectedHost() string {
+	hosts := p.sortedHosts()
+	if p.cursor >= 0 && p.cursor < len(hosts) {
+		return hosts[p.cursor]
+	}
+	return ""
 }
 
 // FailedHosts returns the names of hosts with failed or unreachable status.
@@ -95,6 +119,14 @@ func (p *StatusPanel) Update(msg tea.Msg) tea.Cmd {
 			if p.cursor > 0 {
 				p.cursor--
 			}
+		case "g", "home":
+			p.cursor = 0
+		case "G", "end":
+			p.cursor = max(0, len(p.results)-1)
+		case "enter":
+			if host := p.SelectedHost(); host != "" {
+				return func() tea.Msg { return InspectInventoryMsg{Host: host} }
+			}
 		}
 	}
 	return nil
@@ -132,13 +164,7 @@ func (p *StatusPanel) View() string {
 	}
 
 	// Sort hosts by status priority (failed first, then changed, then ok).
-	hosts := make([]string, len(p.order))
-	copy(hosts, p.order)
-	sort.SliceStable(hosts, func(i, j int) bool {
-		si := statusPriority(p.results[hosts[i]].Status)
-		sj := statusPriority(p.results[hosts[j]].Status)
-		return si < sj
-	})
+	hosts := p.sortedHosts()
 
 	contentH := p.height - 6
 	if contentH < 1 {
@@ -173,7 +199,7 @@ func (p *StatusPanel) View() string {
 		}
 	}
 
-	return sb.String()
+	return clipWidth(sb.String(), p.width)
 }
 
 func renderStatusBadge(s core.TaskStatus) string {
@@ -211,11 +237,7 @@ func statusPriority(s core.TaskStatus) int {
 }
 
 func truncate(s string, max int) string {
-	runes := []rune(s)
-	if len(runes) <= max {
-		return s
-	}
-	return string(runes[:max-1]) + "…"
+	return cellTruncate(s, max)
 }
 
 var (

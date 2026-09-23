@@ -1,67 +1,64 @@
-# Contributing to lazyansible
+# Developing this fork
 
-Thank you for your interest in contributing. Please take a moment to read these guidelines before opening an issue or pull request.
+This is the permanent personal fork `daviddwlee84/lazyansible`. Changes here do
+not imply a contribution to `kocierik/lazyansible`. Preserve its MIT attribution.
+Read [AGENTS.md](AGENTS.md) before modifying the project.
 
----
+## Build and verify
 
-## Reporting Issues
+Use the Go version declared in [go.mod](go.mod), currently Go 1.24.2 or newer.
+The existing Bubble Tea v1, Bubbles, and Lip Gloss versions remain the UI stack.
 
-- Search existing issues before opening a new one.
-- Include your OS, Go version, Ansible version, and terminal emulator.
-- For panics or unexpected output, attach the relevant log lines or a minimal reproduction.
-
-## Development Setup
-
-```bash
-git clone https://github.com/kocierik/lazyansible
-cd lazyansible
-go mod download
-
-# Build
-go build -o lazyansible ./cmd/lazyansible
-
-# Run against the bundled sample project
-./lazyansible -i ansible/inventories/local.ini -d ansible/playbooks/
+```sh
+mkdir -p bin
+go build -o bin/lazyansible ./cmd/lazyansible
+go test ./...
+go vet ./...
+python3 testdata/pty_smoke.py ./bin/lazyansible
 ```
 
-**Requirements:** Go 1.22+, `ansible-playbook` in `$PATH`.
+Run `go test -race ./...` after concurrency changes. Use `gofmt` on changed Go
+files. Tests use isolated HOME/XDG directories, fake executables, or the disposable
+localhost fixture under `testdata/localhost`. Never use a real inventory or a full
+dotfiles apply as a routine smoke test. The PTY harness checks actual input and
+terminal restoration; model tests alone cannot establish those properties.
 
-## Release (maintainers)
+## Code boundaries
 
-Update `CHANGELOG.md`, then from the repo root:
+- `internal/ansible` owns executable resolution, observations, command plans,
+  and shell-free process execution. Both CLI and TUI call it.
+- `internal/cli` handles arguments, output formats, and review/confirmation.
+- `internal/ui` owns interaction state; blocking subprocess work belongs in
+  Bubble Tea commands. Overlay state does not own process completion.
+- `internal/config` and `internal/paths` own preferences and XDG policy.
+  Profiles belong in config, history in state, update observations in cache.
+- `internal/buildinfo` supplies one CLI/TUI version. Local checkout builds are
+  `dev`; an eventual release can inject `Version`, `Commit`, and `Date`.
 
-```bash
-./scripts/release.sh 1.2.3              # prompts for confirmation
-./scripts/release.sh -y 1.2.3           # no prompts (for CI / only use if sure)
-./scripts/release.sh --skip-tag 1.2.3   # commit + push, tag later with --tag-only
-./scripts/release.sh --tag-only 1.2.3   # only creates and pushes the tag (commit already done)
-```
+Text input owns printable keys. Navigation supports arrows and Vim aliases.
+Keep action hints and dispatch consistent. Preserve filters, selection identity,
+and project context across refresh and external-editor handoff.
 
-The script runs `gofmt`, `go test`, `go build`, optionally `./bin/golangci-lint`, updates `pkgver` in `packages/aur/PKGBUILD`, does `git add -u`, commits with `chore: release v…`, pushes the branch, creates an annotated tag, and pushes the tag. After the GitHub Release, update the AUR manually (see instructions at the end of the script).
+## Review and reports
 
-A personal copy in `./release.sh` is ignored by git (see `.gitignore`).
+Include the observable behavior, motivation, relevant checks, and remaining
+limits. Keep the [Unreleased changelog](CHANGELOG.md) current. Agent involvement
+must not be inferred from style; describe actual assistance when publishing work.
+Preserve unrelated live `.specstory` files and keep private configuration and
+transcripts out of publication.
 
-## Code Style
+Use [TODO.md](TODO.md) for deferred work and its linked research notes to preserve
+decisions. Capture recurring traps in [pitfalls/](pitfalls/README.md).
 
-- Standard `gofmt` formatting — run `go fmt ./...` before committing.
-- Keep packages small and focused. The `core` package must have no UI or I/O dependencies.
-- New overlays go in `internal/ui/` and follow the existing pattern: a struct with `Update(tea.Msg) tea.Cmd` and `View() string`.
-- Avoid `evalCmd` for long-running or timer-based commands — return the command to Bubble Tea for async execution.
+## Distribution boundary
 
-## Pull Request Guidelines
+The current workflow is local source build and rebuild, not a supported packaged
+release. The manual snapshot workflow builds artifacts only. It does not publish
+on tags or update any package repository. `.goreleaser.yml` names this fork and
+contains no upstream tap/bucket targets. The inherited AUR package was removed
+because it downloaded upstream binaries.
 
-1. Fork the repository and create a branch from `main`.
-2. Keep each PR focused on a single feature or fix.
-3. Add or update entries in `CHANGELOG.md` under `## [Unreleased]`.
-4. Ensure `go build ./...` and `go vet ./...` pass with no errors.
-5. Describe the motivation and approach in the PR description.
-
-## Commit Style
-
-Use short, descriptive commit messages in the imperative mood:
-
-```
-add log level filter to logs panel
-fix border misalignment when terminal width < 80
-remove vars browser overlay
-```
+Before a first release, complete the [distribution follow-up](backlog/release-and-upgrade.md):
+choose supported channels, test upgrade ownership and the effective installed
+copy, and verify an immutable public revision. Do not run an undocumented release
+helper, push, tag, or publish merely because a local build passes.

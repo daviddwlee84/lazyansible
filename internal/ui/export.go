@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/kocierik/lazyansible/internal/core"
-	"github.com/kocierik/lazyansible/internal/history"
+	"github.com/daviddwlee84/lazyansible/internal/core"
+	"github.com/daviddwlee84/lazyansible/internal/history"
 )
 
 // exportRunMarkdown writes the last run's metadata and log output as a Markdown

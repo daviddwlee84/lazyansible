@@ -1,148 +1,36 @@
 version: 2
-
 project_name: lazyansible
 
 env:
   - CGO_ENABLED=0
-  - GO111MODULE=on
-
-before:
-  hooks:
-    - go mod tidy
 
 builds:
   - id: lazyansible
     main: ./cmd/lazyansible
     binary: lazyansible
-    goos:
-      - linux
-      - darwin
-      - windows
-    goarch:
-      - amd64
-      - arm64
-      - arm
-      - "386"
-    goarm:
-      - "6"
-      - "7"
-    ignore:
-      - goos: windows
-        goarch: arm
-      - goos: windows
-        goarch: arm64
-      - goos: darwin
-        goarch: arm
-      - goos: darwin
-        goarch: "386"
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
     ldflags:
       - -s -w
-      - -X github.com/kocierik/lazyansible/internal/ui.version={{ .Version }}
-      - -X github.com/kocierik/lazyansible/internal/ui.commit={{ .Commit }}
-      - -X github.com/kocierik/lazyansible/internal/ui.date={{ .Date }}
+      - -X github.com/daviddwlee84/lazyansible/internal/buildinfo.Version={{ .Version }}
+      - -X github.com/daviddwlee84/lazyansible/internal/buildinfo.Commit={{ .Commit }}
+      - -X github.com/daviddwlee84/lazyansible/internal/buildinfo.Date={{ .Date }}
 
 archives:
-  - id: lazyansible
-    builds:
-      - lazyansible
-    name_template: >-
-      {{ .ProjectName }}_
-      {{- .Version }}_
-      {{- .Os }}_
-      {{- if eq .Arch "amd64" }}x86_64
-      {{- else if eq .Arch "386" }}i386
-      {{- else }}{{ .Arch }}{{ end }}
-      {{- if .Arm }}v{{ .Arm }}{{ end }}
-    format_overrides:
-      - goos: windows
-        formats: [zip]
-    files:
-      - README.md
-      - LICENSE
-      - CHANGELOG.md
+  - formats: [tar.gz]
+    files: [README.md, LICENSE, CHANGELOG.md]
 
 checksum:
-  name_template: "checksums.txt"
+  name_template: checksums.txt
 
 snapshot:
   version_template: "{{ .Tag }}-next"
 
-changelog:
-  use: github
-  sort: asc
-  groups:
-    - title: "New Features"
-      regexp: "^feat"
-      order: 0
-    - title: "Bug Fixes"
-      regexp: "^fix"
-      order: 1
-    - title: "Other"
-      order: 999
-  filters:
-    exclude:
-      - "^docs:"
-      - "^test:"
-      - "^chore:"
-      - "^ci:"
-      - Merge pull request
-      - Merge branch
-
-brews:
-  - name: lazyansible
-    repository:
-      owner: kocierik
-      name: homebrew-lazyansible
-      token: "{{ .Env.GORELEASER_TOKEN }}"
-    homepage: "https://github.com/kocierik/lazyansible"
-    description: "A lazy TUI for Ansible — browse inventory, run playbooks, stream logs"
-    license: "MIT"
-    directory: Formula
-    install: |
-      bin.install "lazyansible"
-    test: |
-      system "#{bin}/lazyansible", "--version"
-
-scoops:
-  - repository:
-      owner: kocierik
-      name: scoop-lazyansible
-      token: "{{ .Env.GORELEASER_TOKEN }}"
-    homepage: "https://github.com/kocierik/lazyansible"
-    description: "A lazy TUI for Ansible — browse inventory, run playbooks, stream logs"
-    license: MIT
-
+# Future manual releases target only this fork and start as drafts.
+# The current GitHub workflow invokes `build --snapshot`, never `release`.
 release:
   github:
-    owner: kocierik
+    owner: daviddwlee84
     name: lazyansible
-  name_template: "v{{ .Version }}"
-  draft: false
+  draft: true
   prerelease: auto
-  footer: |
-    ## Installation
-
-    **Homebrew** (macOS / Linux):
-    ```bash
-    brew install kocierik/lazyansible/lazyansible
-    ```
-
-    **Scoop** (Windows):
-    ```powershell
-    scoop bucket add lazyansible https://github.com/kocierik/scoop-lazyansible
-    scoop install lazyansible
-    ```
-
-    **AUR** (Arch Linux):
-    ```bash
-    yay -S lazyansible-bin
-    ```
-
-    **Go install**:
-    ```bash
-    go install github.com/kocierik/lazyansible/cmd/lazyansible@latest
-    ```
-
-    Or download the binary for your platform from the assets above.
-
-    **Full changelog:** https://github.com/kocierik/lazyansible/blob/main/CHANGELOG.md

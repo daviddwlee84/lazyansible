@@ -53,7 +53,7 @@ func (e *ExtraVarsOverlay) Update(msg tea.Msg) tea.Cmd {
 }
 
 func (e *ExtraVarsOverlay) View() string {
-	boxW := min(e.width-8, 66)
+	boxW := max(1, min(e.width-8, 66))
 
 	var sb strings.Builder
 	sb.WriteString(overlayTitleStyle.Render("Extra Variables") + "\n\n")

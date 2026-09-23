@@ -11,7 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/kocierik/lazyansible/internal/roles"
+	"github.com/daviddwlee84/lazyansible/internal/roles"
 )
 
 // RoleRunMsg is sent when the user requests running a role.
@@ -47,6 +47,10 @@ func newRolesOverlay(width, height int) *RolesOverlay {
 }
 
 func (o *RolesOverlay) Load(rolesDir, inventory, limit string) {
+	selectedPath := ""
+	if selected := o.selected(); selected != nil {
+		selectedPath = selected.Path
+	}
 	o.inventory = inventory
 	o.limit = limit
 	o.cursor = 0
@@ -56,10 +60,34 @@ func (o *RolesOverlay) Load(rolesDir, inventory, limit string) {
 	r, err := roles.Scan(rolesDir)
 	o.roles = r
 	o.err = err
+	for i, role := range o.visible() {
+		if role.Path == selectedPath {
+			o.cursor = i
+			break
+		}
+	}
+}
+
+func (o *RolesOverlay) HandleEscape() bool {
+	if o.filtering {
+		o.filtering = false
+		o.filter.Blur()
+		return true
+	}
+	if o.filter.Value() != "" {
+		o.filter.SetValue("")
+		o.cursor = 0
+		return true
+	}
+	if o.pane == 1 {
+		o.pane = 0
+		return true
+	}
+	return false
 }
 
 func (o *RolesOverlay) visible() []*roles.Role {
-	if !o.filtering || o.filter.Value() == "" {
+	if o.filter.Value() == "" {
 		return o.roles
 	}
 	q := strings.ToLower(o.filter.Value())
@@ -74,7 +102,7 @@ func (o *RolesOverlay) visible() []*roles.Role {
 
 func (o *RolesOverlay) selected() *roles.Role {
 	vis := o.visible()
-	if o.cursor < len(vis) {
+	if o.cursor >= 0 && o.cursor < len(vis) {
 		return vis[o.cursor]
 	}
 	return nil
@@ -82,27 +110,49 @@ func (o *RolesOverlay) selected() *roles.Role {
 
 func (o *RolesOverlay) Update(msg tea.Msg) tea.Cmd {
 	key, ok := msg.(tea.KeyMsg)
-	if !ok {
-		if o.filtering {
-			var cmd tea.Cmd
-			o.filter, cmd = o.filter.Update(msg)
-			return cmd
+	if o.filtering {
+		if ok {
+			switch key.String() {
+			case "enter", "esc", "tab", "ctrl+c":
+				o.filtering = false
+				o.filter.Blur()
+				return nil
+			case "up":
+				o.cursor = max(0, o.cursor-1)
+				return nil
+			case "down":
+				o.cursor = min(o.cursor+1, max(0, len(o.visible())-1))
+				return nil
+			}
 		}
+		var cmd tea.Cmd
+		previous := o.filter.Value()
+		o.filter, cmd = o.filter.Update(msg)
+		if previous != o.filter.Value() {
+			o.cursor = 0
+			o.detailOff = 0
+		}
+		return cmd
+	}
+	if !ok {
 		return nil
 	}
 
 	switch key.String() {
 	case "/":
-		o.filtering = !o.filtering
-		if o.filtering {
-			o.filter.Focus()
-		} else {
-			o.filter.Blur()
-			o.filter.SetValue("")
-		}
+		o.filtering = true
+		return o.filter.Focus()
+	case "esc":
+		o.HandleEscape()
+		return nil
+	case "h", "left":
+		o.pane = 0
+		return nil
+	case "l", "right", "enter":
+		o.pane = 1
 		return nil
 
-	case "tab":
+	case "tab", "shift+tab":
 		if o.pane == 0 {
 			o.pane = 1
 		} else {
@@ -110,18 +160,10 @@ func (o *RolesOverlay) Update(msg tea.Msg) tea.Cmd {
 		}
 		return nil
 
-	case "enter":
-		if o.pane == 0 {
-			if r := o.selected(); r != nil {
-				return func() tea.Msg {
-					return RoleRunMsg{
-						RolePath:  r.Path,
-						RoleName:  r.Name,
-						Inventory: o.inventory,
-						Limit:     o.limit,
-					}
-				}
-			}
+	case "r":
+		if r := o.selected(); r != nil {
+			request := RoleRunMsg{RolePath: r.Path, RoleName: r.Name, Inventory: o.inventory, Limit: o.limit}
+			return func() tea.Msg { return request }
 		}
 		return nil
 	}
@@ -140,17 +182,11 @@ func (o *RolesOverlay) Update(msg tea.Msg) tea.Cmd {
 				o.cursor--
 				o.detailOff = 0
 			}
-		case "g":
+		case "g", "home":
 			o.cursor = 0
-		case "G":
+		case "G", "end":
 			if len(vis) > 0 {
 				o.cursor = len(vis) - 1
-			}
-		default:
-			if o.filtering {
-				var cmd tea.Cmd
-				o.filter, cmd = o.filter.Update(msg)
-				return cmd
 			}
 		}
 	} else {
@@ -161,16 +197,20 @@ func (o *RolesOverlay) Update(msg tea.Msg) tea.Cmd {
 			if o.detailOff > 0 {
 				o.detailOff--
 			}
-		case "g":
+		case "g", "home":
 			o.detailOff = 0
+		case "G", "end":
+			if role := o.selected(); role != nil {
+				o.detailOff = len(role.Tasks) + len(role.Defaults) + len(role.Handlers) + len(role.Deps) + 20
+			}
 		}
 	}
 	return nil
 }
 
 func (o *RolesOverlay) View() string {
-	boxW := min(o.width-4, 90)
-	boxH := min(o.height-2, 36)
+	boxW := max(1, min(o.width-4, 90))
+	boxH := max(1, min(o.height-2, 36))
 
 	if o.err != nil {
 		content := overlayTitleStyle.Render("Role Browser") + "\n\n" +
@@ -186,11 +226,11 @@ func (o *RolesOverlay) View() string {
 		return overlayBoxStyle.Width(boxW).Height(boxH).Render(content)
 	}
 
-	listW := 26
-	detailW := boxW - listW - 5 // 5 = box padding + separator
+	listW := max(1, min(26, boxW/3))
+	detailW := max(1, boxW-listW-5)
 
-	listPane := o.renderList(listW, boxH-5)
-	detailPane := o.renderDetail(detailW, boxH-5)
+	listPane := o.renderList(listW, max(3, boxH-5))
+	detailPane := o.renderDetail(detailW, max(1, boxH-5))
 
 	panes := lipgloss.JoinHorizontal(lipgloss.Top,
 		lipgloss.NewStyle().Width(listW).Height(boxH-6).Render(listPane),
@@ -202,13 +242,13 @@ func (o *RolesOverlay) View() string {
 	)
 
 	title := overlayTitleStyle.Render("Role Browser")
-	if o.filtering {
+	if o.filtering || o.filter.Value() != "" {
 		title += "  " + overlayLabelStyle.Render("filter: ") + o.filter.View()
 	}
 
-	hint := "[j/k] navigate  [tab] switch pane  [enter] run role  [/] filter  [esc] close"
+	hint := "[j/k] navigate  [tab/h/l] pane  [enter] inspect  [r] review run  [/] filter  [esc] back"
 	if o.selected() != nil && o.limit != "" {
-		hint = fmt.Sprintf("[enter] run on: %s  ", o.limit) + hint
+		hint = fmt.Sprintf("Target: %s  ", o.limit) + hint
 	}
 
 	content := title + "\n\n" + panes + "\n\n" + overlayHintStyle.Render(hint)
@@ -238,7 +278,7 @@ func (o *RolesOverlay) renderList(w, h int) string {
 	for i := start; i < end; i++ {
 		r := vis[i]
 		count := fmt.Sprintf("(%d)", len(r.Tasks))
-		nameW := w - len(count) - 2
+		nameW := max(1, w-len(count)-2)
 		name := truncateStr(r.Name, nameW)
 		line := fmt.Sprintf("%-*s %s", nameW, name, count)
 

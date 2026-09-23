@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/kocierik/lazyansible/internal/core"
+	"github.com/daviddwlee84/lazyansible/internal/core"
 	"gopkg.in/yaml.v3"
 )
 

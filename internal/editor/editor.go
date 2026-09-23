@@ -4,10 +4,12 @@
 package editor
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -21,14 +23,80 @@ type DoneMsg struct {
 // Open suspends the TUI, launches the preferred editor on path, and sends
 // DoneMsg when it returns.
 func Open(path string) tea.Cmd {
-	editorBin := findEditor()
-	cmd := exec.Command(editorBin, path)
+	cmd, err := Command(findEditor(), path)
+	if err != nil {
+		return func() tea.Msg { return DoneMsg{Path: path, Err: err} }
+	}
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return tea.ExecProcess(cmd, func(err error) tea.Msg {
 		return DoneMsg{Path: path, Err: err}
 	})
+}
+
+// Command parses a VISUAL/EDITOR value into executable and arguments, then
+// appends the file as one argument. Quotes and escapes group words; shell
+// expansion, substitutions, pipelines and redirections are never evaluated.
+func Command(value, path string) (*exec.Cmd, error) {
+	words, err := splitWords(value)
+	if err != nil {
+		return nil, err
+	}
+	if len(words) == 0 || words[0] == "" {
+		return nil, errors.New("editor command is empty")
+	}
+	return exec.Command(words[0], append(words[1:], path)...), nil
+}
+
+func splitWords(value string) ([]string, error) {
+	var words []string
+	var word strings.Builder
+	var quote rune
+	escaped, started := false, false
+	for _, character := range value {
+		if escaped {
+			word.WriteRune(character)
+			escaped = false
+			started = true
+			continue
+		}
+		if character == '\\' && quote != '\'' {
+			escaped = true
+			started = true
+			continue
+		}
+		if quote != 0 {
+			if character == quote {
+				quote = 0
+			} else {
+				word.WriteRune(character)
+			}
+			started = true
+			continue
+		}
+		switch character {
+		case '\'', '"':
+			quote = character
+			started = true
+		case ' ', '\t', '\n':
+			if started {
+				words = append(words, word.String())
+				word.Reset()
+				started = false
+			}
+		default:
+			word.WriteRune(character)
+			started = true
+		}
+	}
+	if escaped || quote != 0 {
+		return nil, errors.New("editor command has an unfinished quote or escape")
+	}
+	if started {
+		words = append(words, word.String())
+	}
+	return words, nil
 }
 
 // FindOrCreate looks for a vars file for entityName under baseDir (and its
@@ -43,6 +111,9 @@ func Open(path string) tea.Cmd {
 // back to baseDir. This prevents accidental creation inside an inventories/
 // subdirectory when the actual group_vars/ lives one level up.
 func FindOrCreate(baseDir, subdir, entityName string) (string, error) {
+	if entityName == "" || entityName == "." || entityName == ".." || filepath.Base(entityName) != entityName {
+		return "", fmt.Errorf("invalid inventory entity name for a variables file")
+	}
 	// Build ordered list of directories to search: baseDir, then its parent.
 	searchDirs := []string{baseDir}
 	if parent := filepath.Dir(baseDir); parent != baseDir {

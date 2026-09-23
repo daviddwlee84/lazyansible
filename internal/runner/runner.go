@@ -2,18 +2,18 @@
 package runner
 
 import (
-	"bufio"
 	"context"
 	"fmt"
-	"io"
-	"os"
 	"os/exec"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/kocierik/lazyansible/internal/core"
+	"github.com/daviddwlee84/lazyansible/internal/ansible"
+	"github.com/daviddwlee84/lazyansible/internal/core"
 )
 
 // LogMsg is sent over the Bubble Tea message bus for each log line.
@@ -39,8 +39,18 @@ type HostStatusMsg struct {
 // output messages back through the tea.Program's Send channel.
 func StreamCmd(ctx context.Context, opts core.RunOptions, sendFn func(tea.Msg)) tea.Cmd {
 	return func() tea.Msg {
-		args := buildPlaybookArgs(opts)
-		return stream(ctx, "ansible-playbook", args, opts.Env, sendFn)
+		request := ansible.RunRequest{Kind: "playbook", Project: ansible.ProjectContext{Inventory: opts.Inventory}, Playbook: opts.Playbook, Limit: opts.Limit, Tags: opts.Tags, Check: opts.CheckMode, Diff: opts.DiffMode, VaultPasswordFile: opts.VaultPasswordFile, Env: opts.Env}
+		for _, k := range sortedVarKeys(opts.ExtraVars) {
+			request.ExtraVars = append(request.ExtraVars, fmt.Sprintf("%s=%s", k, opts.ExtraVars[k]))
+		}
+		if opts.ExtraVarsRaw != "" {
+			request.ExtraVars = append(request.ExtraVars, opts.ExtraVarsRaw)
+		}
+		plan, err := ansible.Prepare(ctx, request)
+		if err != nil {
+			return RunFinishedMsg{ExitCode: -1, Err: err}
+		}
+		return StreamPlanCmd(ctx, plan, sendFn)()
 	}
 }
 
@@ -50,7 +60,16 @@ func BuildPlaybookCommand(opts core.RunOptions) string {
 	args := buildPlaybookArgs(opts)
 	parts := make([]string, 0, len(args)+1)
 	parts = append(parts, "ansible-playbook")
+	hideNext := false
 	for _, a := range args {
+		if hideNext {
+			parts = append(parts, "<redacted>")
+			hideNext = false
+			continue
+		}
+		if a == "-e" || a == "-a" || a == "--vault-password-file" {
+			hideNext = true
+		}
 		if strings.ContainsAny(a, " \t\"'") {
 			parts = append(parts, "'"+strings.ReplaceAll(a, "'", `'"'"'`)+"'")
 		} else {
@@ -65,7 +84,16 @@ func BuildAdHocCommand(opts core.AdHocOptions) string {
 	args := buildAdHocArgs(opts)
 	parts := make([]string, 0, len(args)+1)
 	parts = append(parts, "ansible")
+	hideNext := false
 	for _, a := range args {
+		if hideNext {
+			parts = append(parts, "<redacted>")
+			hideNext = false
+			continue
+		}
+		if a == "-e" || a == "-a" || a == "--vault-password-file" {
+			hideNext = true
+		}
 		if strings.ContainsAny(a, " \t\"'") {
 			parts = append(parts, "'"+strings.ReplaceAll(a, "'", `'"'"'`)+"'")
 		} else {
@@ -78,8 +106,15 @@ func BuildAdHocCommand(opts core.AdHocOptions) string {
 // AdHocStreamCmd runs an ansible ad-hoc command and streams output.
 func AdHocStreamCmd(ctx context.Context, opts core.AdHocOptions, sendFn func(tea.Msg)) tea.Cmd {
 	return func() tea.Msg {
-		args := buildAdHocArgs(opts)
-		return stream(ctx, "ansible", args, nil, sendFn)
+		request := ansible.RunRequest{Kind: "adhoc", Project: ansible.ProjectContext{Inventory: opts.Inventory}, Hosts: opts.Hosts, Module: opts.Module, Args: opts.Args, Become: opts.Become}
+		for _, k := range sortedVarKeys(opts.ExtraVars) {
+			request.ExtraVars = append(request.ExtraVars, fmt.Sprintf("%s=%s", k, opts.ExtraVars[k]))
+		}
+		plan, err := ansible.Prepare(ctx, request)
+		if err != nil {
+			return RunFinishedMsg{ExitCode: -1, Err: err}
+		}
+		return StreamPlanCmd(ctx, plan, sendFn)()
 	}
 }
 
@@ -113,63 +148,39 @@ func CheckLintBinary() error {
 // LintCmd runs ansible-lint on the given playbook path and streams output.
 func LintCmd(ctx context.Context, playbookPath string, sendFn func(tea.Msg)) tea.Cmd {
 	return func() tea.Msg {
-		return stream(ctx, "ansible-lint", []string{"--nocolor", playbookPath}, nil, sendFn)
+		plan, err := ansible.Prepare(ctx, ansible.RunRequest{Kind: "lint", Playbook: playbookPath})
+		if err != nil {
+			return RunFinishedMsg{ExitCode: -1, Err: err}
+		}
+		return StreamPlanCmd(ctx, plan, sendFn)()
 	}
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
-func stream(ctx context.Context, binary string, args []string, extraEnv []string, sendFn func(tea.Msg)) tea.Msg {
-	start := time.Now()
-	cmd := exec.CommandContext(ctx, binary, args...)
-	if len(extraEnv) > 0 {
-		cmd.Env = append(os.Environ(), extraEnv...)
-	}
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return RunFinishedMsg{ExitCode: -1, Err: fmt.Errorf("stdout pipe: %w", err)}
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return RunFinishedMsg{ExitCode: -1, Err: fmt.Errorf("stderr pipe: %w", err)}
-	}
-
-	if err := cmd.Start(); err != nil {
-		return RunFinishedMsg{ExitCode: -1, Err: fmt.Errorf("start %s: %w", binary, err)}
-	}
-
-	done := make(chan struct{}, 2)
-	streamPipe := func(r io.Reader) {
-		scanner := bufio.NewScanner(r)
-		for scanner.Scan() {
-			text := scanner.Text()
-			line := classifyLine(text)
-			sendFn(LogMsg{Line: line})
-
-			if status, host, task, ok := parseHostStatus(text); ok {
+// StreamPlanCmd is the Bubble Tea bridge for a shared, reviewed domain plan.
+func StreamPlanCmd(ctx context.Context, plan ansible.RunPlan, sendFn func(tea.Msg)) tea.Cmd {
+	return func() tea.Msg {
+		result, err := ansible.Execute(ctx, plan, func(event ansible.Event) {
+			if sendFn == nil {
+				return
+			}
+			sendFn(LogMsg{Line: classifyLine(event.Line)})
+			if status, host, task, ok := parseHostStatus(event.Line); ok {
 				sendFn(HostStatusMsg{Host: host, Status: status, Task: task})
 			}
-		}
-		done <- struct{}{}
+		})
+		return RunFinishedMsg{ExitCode: result.ExitCode, Err: err, Duration: result.Duration}
 	}
+}
 
-	go streamPipe(stdout)
-	go streamPipe(stderr)
-
-	<-done
-	<-done
-
-	elapsed := time.Since(start)
-	exitCode := 0
-	if err := cmd.Wait(); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			exitCode = exitErr.ExitCode()
-		} else {
-			return RunFinishedMsg{ExitCode: -1, Err: err, Duration: elapsed}
-		}
+func sortedVarKeys(vars map[string]string) []string {
+	keys := make([]string, 0, len(vars))
+	for key := range vars {
+		keys = append(keys, key)
 	}
-	return RunFinishedMsg{ExitCode: exitCode, Duration: elapsed}
+	sort.Strings(keys)
+	return keys
 }
 
 func buildPlaybookArgs(opts core.RunOptions) []string {
@@ -189,8 +200,13 @@ func buildPlaybookArgs(opts core.RunOptions) []string {
 	if opts.DiffMode {
 		args = append(args, "--diff")
 	}
-	for k, v := range opts.ExtraVars {
-		args = append(args, "-e", fmt.Sprintf("%s=%s", k, v))
+	keys := make([]string, 0, len(opts.ExtraVars))
+	for k := range opts.ExtraVars {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		args = append(args, "-e", fmt.Sprintf("%s=%s", k, opts.ExtraVars[k]))
 	}
 	if opts.ExtraVarsRaw != "" {
 		args = append(args, "-e", opts.ExtraVarsRaw)
@@ -217,8 +233,13 @@ func buildAdHocArgs(opts core.AdHocOptions) []string {
 	if opts.Become {
 		args = append(args, "--become")
 	}
-	for k, v := range opts.ExtraVars {
-		args = append(args, "-e", fmt.Sprintf("%s=%s", k, v))
+	keys := make([]string, 0, len(opts.ExtraVars))
+	for k := range opts.ExtraVars {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		args = append(args, "-e", fmt.Sprintf("%s=%s", k, opts.ExtraVars[k]))
 	}
 	return args
 }
@@ -265,9 +286,32 @@ func classifyLine(text string) core.LogLine {
 //	failed: [hostname]
 func parseHostStatus(text string) (status core.TaskStatus, host string, task string, ok bool) {
 	lower := strings.ToLower(strings.TrimSpace(text))
+	if status, host, ok := parseRecapStatus(text); ok {
+		return status, host, "PLAY RECAP", true
+	}
+	// Ad-hoc commands use "host | SUCCESS =>" rather than playbook banners.
+	if parts := strings.SplitN(text, " | ", 2); len(parts) == 2 {
+		result := strings.ToLower(parts[1])
+		s := core.TaskStatusUnknown
+		switch {
+		case strings.HasPrefix(result, "success"):
+			s = core.TaskStatusOK
+		case strings.HasPrefix(result, "changed"):
+			s = core.TaskStatusChanged
+		case strings.HasPrefix(result, "unreachable"):
+			s = core.TaskStatusUnreachable
+		case strings.HasPrefix(result, "failed"):
+			s = core.TaskStatusFailed
+		}
+		if s != core.TaskStatusUnknown {
+			return s, strings.TrimSpace(parts[0]), "", true
+		}
+	}
 
 	var s core.TaskStatus
 	switch {
+	case (strings.HasPrefix(lower, "fatal:") || strings.HasPrefix(lower, "failed:")) && strings.Contains(lower, "unreachable"):
+		s = core.TaskStatusUnreachable
 	case strings.HasPrefix(lower, "ok:"):
 		s = core.TaskStatusOK
 	case strings.HasPrefix(lower, "changed:"):
@@ -289,4 +333,53 @@ func parseHostStatus(text string) (status core.TaskStatus, host string, task str
 	}
 	hostName := text[start+1 : end]
 	return s, hostName, "", true
+}
+
+// Recap counters are authoritative for the final host state. A task failure
+// followed by "...ignoring" must not leave that host marked failed when the
+// recap reports failed=0, rescued/ignored>0.
+func parseRecapStatus(text string) (core.TaskStatus, string, bool) {
+	marker := strings.Index(text, "ok=")
+	if marker < 0 {
+		return 0, "", false
+	}
+	prefix := strings.TrimSpace(text[:marker])
+	if !strings.HasSuffix(prefix, ":") {
+		return 0, "", false
+	}
+	host := strings.TrimSpace(strings.TrimSuffix(prefix, ":"))
+	if host == "" {
+		return 0, "", false
+	}
+	counts := map[string]int{}
+	for _, field := range strings.Fields(text[marker:]) {
+		key, value, ok := strings.Cut(field, "=")
+		if !ok {
+			return 0, "", false
+		}
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 0 {
+			return 0, "", false
+		}
+		counts[key] = n
+	}
+	for _, key := range []string{"ok", "changed", "unreachable", "failed"} {
+		if _, ok := counts[key]; !ok {
+			return 0, "", false
+		}
+	}
+	switch {
+	case counts["failed"] > 0:
+		return core.TaskStatusFailed, host, true
+	case counts["unreachable"] > 0:
+		return core.TaskStatusUnreachable, host, true
+	case counts["changed"] > 0:
+		return core.TaskStatusChanged, host, true
+	case counts["ok"] > 0:
+		return core.TaskStatusOK, host, true
+	case counts["skipped"] > 0:
+		return core.TaskStatusSkipped, host, true
+	default:
+		return core.TaskStatusUnknown, host, true
+	}
 }

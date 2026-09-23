@@ -8,7 +8,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/kocierik/lazyansible/internal/ssh"
+	"github.com/daviddwlee84/lazyansible/internal/ssh"
 )
 
 // SSHProfileAppliedMsg is sent when the user applies a profile.
@@ -45,6 +45,15 @@ func newSSHProfileOverlay(width, height int) *SSHProfileOverlay {
 func (o *SSHProfileOverlay) loadProfiles() {
 	profiles, _ := ssh.Load()
 	o.profiles = profiles
+	o.cursor = max(0, min(o.cursor, len(profiles)-1))
+}
+
+func (o *SSHProfileOverlay) HandleEscape() bool {
+	if o.mode == sshFormAdd {
+		o.mode = sshFormList
+		return true
+	}
+	return false
 }
 
 func (o *SSHProfileOverlay) buildForm() {
@@ -96,6 +105,10 @@ func (o *SSHProfileOverlay) Update(msg tea.Msg) tea.Cmd {
 
 func (o *SSHProfileOverlay) updateList(key tea.KeyMsg) tea.Cmd {
 	switch key.String() {
+	case "g", "home":
+		o.cursor = 0
+	case "G", "end":
+		o.cursor = max(0, len(o.profiles)-1)
 	case "j", "down":
 		if o.cursor < len(o.profiles)-1 {
 			o.cursor++
@@ -145,7 +158,7 @@ func (o *SSHProfileOverlay) updateForm(key tea.KeyMsg) tea.Cmd {
 			_ = ssh.Save(o.profiles)
 		}
 		o.mode = sshFormList
-		o.cursor = len(o.profiles) - 1
+		o.cursor = max(0, len(o.profiles)-1)
 		return nil
 	default:
 		var cmd tea.Cmd
@@ -170,8 +183,8 @@ func (o *SSHProfileOverlay) buildProfile() *ssh.Profile {
 }
 
 func (o *SSHProfileOverlay) View() string {
-	boxW := min(o.width-8, 68)
-	boxH := min(o.height-4, 26)
+	boxW := max(1, min(o.width-8, 68))
+	boxH := max(1, min(o.height-4, 26))
 
 	if o.mode == sshFormAdd {
 		return o.viewForm(boxW, boxH)

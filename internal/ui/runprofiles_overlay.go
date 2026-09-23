@@ -7,7 +7,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/kocierik/lazyansible/internal/runprofiles"
+	"github.com/daviddwlee84/lazyansible/internal/runprofiles"
 )
 
 // RunProfileLoadMsg is sent when the user selects a run profile to apply.
@@ -18,6 +18,7 @@ type rpMode int
 const (
 	rpModeList rpMode = iota
 	rpModeSave
+	rpModeDetail
 )
 
 // RunProfilesOverlay allows saving and loading named run configurations.
@@ -40,6 +41,7 @@ type RunProfilesOverlay struct {
 	snapCheck     bool
 	snapDiff      bool
 	snapInventory string
+	snapWorkDir   string
 }
 
 func newRunProfilesOverlay(width, height int) *RunProfilesOverlay {
@@ -54,6 +56,10 @@ func newRunProfilesOverlay(width, height int) *RunProfilesOverlay {
 }
 
 func (o *RunProfilesOverlay) reload() {
+	selectedName := ""
+	if o.cursor >= 0 && o.cursor < len(o.profiles) {
+		selectedName = o.profiles[o.cursor].Name
+	}
 	profs, err := runprofiles.Load()
 	if err != nil {
 		o.err = err.Error()
@@ -61,11 +67,27 @@ func (o *RunProfilesOverlay) reload() {
 		o.err = ""
 	}
 	o.profiles = profs
+	o.cursor = max(0, min(o.cursor, len(profs)-1))
+	for i, profile := range profs {
+		if profile.Name == selectedName {
+			o.cursor = i
+			break
+		}
+	}
+}
+
+func (o *RunProfilesOverlay) HandleEscape() bool {
+	if o.mode != rpModeList {
+		o.mode = rpModeList
+		o.nameInput.Blur()
+		return true
+	}
+	return false
 }
 
 // SetSnapshot captures current run state so the user can save it as a profile.
 func (o *RunProfilesOverlay) SetSnapshot(playbook, limit string, tags []string,
-	extraVars string, check, diff bool, inventory string) {
+	extraVars string, check, diff bool, inventory, workDir string) {
 	o.snapPlaybook = playbook
 	o.snapLimit = limit
 	o.snapTags = tags
@@ -73,6 +95,7 @@ func (o *RunProfilesOverlay) SetSnapshot(playbook, limit string, tags []string,
 	o.snapCheck = check
 	o.snapDiff = diff
 	o.snapInventory = inventory
+	o.snapWorkDir = workDir
 }
 
 func (o *RunProfilesOverlay) Update(msg tea.Msg) tea.Cmd {
@@ -89,6 +112,18 @@ func (o *RunProfilesOverlay) Update(msg tea.Msg) tea.Cmd {
 	if o.mode == rpModeSave {
 		return o.updateSave(key)
 	}
+	if o.mode == rpModeDetail {
+		switch key.String() {
+		case "esc":
+			o.HandleEscape()
+		case "a":
+			if o.cursor >= 0 && o.cursor < len(o.profiles) {
+				profile := o.profiles[o.cursor]
+				return func() tea.Msg { return RunProfileLoadMsg{Profile: profile} }
+			}
+		}
+		return nil
+	}
 	return o.updateList(key)
 }
 
@@ -102,9 +137,9 @@ func (o *RunProfilesOverlay) updateList(key tea.KeyMsg) tea.Cmd {
 		if o.cursor > 0 {
 			o.cursor--
 		}
-	case "g":
+	case "g", "home":
 		o.cursor = 0
-	case "G":
+	case "G", "end":
 		if len(o.profiles) > 0 {
 			o.cursor = len(o.profiles) - 1
 		}
@@ -122,7 +157,11 @@ func (o *RunProfilesOverlay) updateList(key tea.KeyMsg) tea.Cmd {
 			}
 		}
 	case "enter":
-		if o.cursor < len(o.profiles) {
+		if o.cursor >= 0 && o.cursor < len(o.profiles) {
+			o.mode = rpModeDetail
+		}
+	case "a":
+		if o.cursor >= 0 && o.cursor < len(o.profiles) {
 			p := o.profiles[o.cursor]
 			return func() tea.Msg { return RunProfileLoadMsg{Profile: p} }
 		}
@@ -146,9 +185,13 @@ func (o *RunProfilesOverlay) updateSave(key tea.KeyMsg) tea.Cmd {
 				CheckMode: o.snapCheck,
 				DiffMode:  o.snapDiff,
 				Inventory: o.snapInventory,
+				WorkDir:   o.snapWorkDir,
 			}
 			updated := runprofiles.Upsert(o.profiles, p)
-			_ = runprofiles.Save(updated)
+			if err := runprofiles.Save(updated); err != nil {
+				o.err = err.Error()
+				return nil
+			}
 			o.reload()
 		}
 		o.mode = rpModeList
@@ -161,8 +204,13 @@ func (o *RunProfilesOverlay) updateSave(key tea.KeyMsg) tea.Cmd {
 }
 
 func (o *RunProfilesOverlay) View() string {
-	boxW := min(o.width-8, 72)
-	boxH := min(o.height-4, 28)
+	boxW := max(1, min(o.width-8, 72))
+	boxH := max(1, min(o.height-4, 28))
+	if o.mode == rpModeDetail && o.cursor >= 0 && o.cursor < len(o.profiles) {
+		profile := o.profiles[o.cursor]
+		content := overlayTitleStyle.Render(profile.Name) + "\n\n" + fmt.Sprintf("Playbook: %s\nProject: %s\nInventory: %s\nLimit: %s\nTags: %s\nCheck: %t   Diff: %t\nExtra vars configured: %t", profile.Playbook, profile.WorkDir, profile.Inventory, profile.Limit, strings.Join(profile.Tags, ", "), profile.CheckMode, profile.DiffMode, profile.ExtraVars != "") + "\n\n" + overlayHintStyle.Render("[a] apply configuration  [esc] back")
+		return overlayBoxStyle.Width(boxW).Height(boxH).Render(content)
+	}
 
 	if o.mode == rpModeSave {
 		return o.viewSave(boxW, boxH)
@@ -196,7 +244,7 @@ func (o *RunProfilesOverlay) viewList(boxW, boxH int) string {
 
 		header := fmt.Sprintf("  %-18s  %-20s  %-14s  %s", "Name", "Playbook", "Limit", "Flags")
 		sb.WriteString(overlayLabelStyle.Render(header) + "\n")
-		sb.WriteString(overlayMutedStyle.Render(strings.Repeat("─", min(boxW-6, 70))) + "\n")
+		sb.WriteString(overlayMutedStyle.Render(strings.Repeat("─", max(0, min(boxW-6, 70)))) + "\n")
 
 		for i := start; i < end; i++ {
 			p := o.profiles[i]
@@ -228,7 +276,7 @@ func (o *RunProfilesOverlay) viewList(boxW, boxH int) string {
 			p := o.profiles[o.cursor]
 			if p.ExtraVars != "" {
 				sb.WriteString("\n" + overlayLabelStyle.Render("Extra vars: ") +
-					overlayMutedStyle.Render(truncateStr(p.ExtraVars, boxW-14)) + "\n")
+					overlayMutedStyle.Render("configured") + "\n")
 			}
 			if p.Inventory != "" {
 				sb.WriteString(overlayLabelStyle.Render("Inventory:  ") +
@@ -237,7 +285,7 @@ func (o *RunProfilesOverlay) viewList(boxW, boxH int) string {
 		}
 	}
 
-	sb.WriteString("\n" + overlayHintStyle.Render("[s] save current  [enter] load  [d] delete  [esc] close"))
+	sb.WriteString("\n" + overlayHintStyle.Render("[s] save current  [enter] inspect  [a] apply  [d] delete  [esc] close"))
 	return overlayBoxStyle.Width(boxW).Height(boxH).Render(sb.String())
 }
 
@@ -246,6 +294,9 @@ func (o *RunProfilesOverlay) viewSave(boxW, boxH int) string {
 	sb.WriteString(overlayTitleStyle.Render("Save Run Profile") + "\n\n")
 
 	sb.WriteString(overlayLabelStyle.Render("Profile name: ") + o.nameInput.View() + "\n\n")
+	if o.err != "" {
+		sb.WriteString(overlayMutedStyle.Render(o.err) + "\n\n")
+	}
 
 	sb.WriteString(overlayLabelStyle.Render("Will save:\n"))
 	sb.WriteString(overlayMutedStyle.Render(fmt.Sprintf("  Playbook:   %s\n", truncateStr(o.snapPlaybook, 40))))
@@ -254,7 +305,7 @@ func (o *RunProfilesOverlay) viewSave(boxW, boxH int) string {
 		sb.WriteString(overlayMutedStyle.Render(fmt.Sprintf("  Tags:       %s\n", strings.Join(o.snapTags, ", "))))
 	}
 	if o.snapExtraVars != "" {
-		sb.WriteString(overlayMutedStyle.Render(fmt.Sprintf("  Extra vars: %s\n", truncateStr(o.snapExtraVars, 40))))
+		sb.WriteString(overlayMutedStyle.Render("  Extra vars: configured\n"))
 	}
 	flags := ""
 	if o.snapCheck {

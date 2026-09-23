@@ -7,7 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/kocierik/lazyansible/internal/core"
+	"github.com/daviddwlee84/lazyansible/internal/core"
 )
 
 const maxLogLines = 10000
@@ -86,6 +86,12 @@ func (p *LogsPanel) AddLine(line core.LogLine) {
 	}
 	if p.autoScroll {
 		p.offset = 0
+	} else if p.filter.Matches(line.Level) {
+		p.offset = min(p.offset+1, max(0, len(p.filteredLines())-p.visibleLines()))
+	}
+	if p.searchQuery != "" {
+		p.rebuildMatches()
+		p.matchCursor = clampCursor(p.matchCursor, len(p.searchMatches))
 	}
 }
 
@@ -207,7 +213,7 @@ func (p *LogsPanel) Update(msg tea.Msg) tea.Cmd {
 				}
 			}
 		default:
-			if key.Type == tea.KeyRunes {
+			if key.Type == tea.KeyRunes || key.String() == " " {
 				p.searchQuery += key.String()
 				p.rebuildMatches()
 				// Live scroll to best (newest) match as each character is typed.
@@ -273,8 +279,8 @@ func (p *LogsPanel) Update(msg tea.Msg) tea.Cmd {
 		p.offset = maxOff
 		p.autoScroll = false
 	case "ctrl+d":
-		p.offset -= contentH / 2
-		if p.offset < 0 {
+		p.offset -= max(1, contentH/2)
+		if p.offset <= 0 {
 			p.offset = 0
 			p.autoScroll = true
 		}
@@ -283,7 +289,7 @@ func (p *LogsPanel) Update(msg tea.Msg) tea.Cmd {
 		if maxOff < 0 {
 			maxOff = 0
 		}
-		p.offset += contentH / 2
+		p.offset += max(1, contentH/2)
 		if p.offset > maxOff {
 			p.offset = maxOff
 		}
@@ -294,7 +300,8 @@ func (p *LogsPanel) Update(msg tea.Msg) tea.Cmd {
 		p.filter = (p.filter + 1) % logFilterCount
 		p.offset = 0
 		p.autoScroll = true
-		p.searchMatches = nil
+		p.rebuildMatches()
+		p.matchCursor = clampCursor(p.matchCursor, len(p.searchMatches))
 	}
 	return nil
 }
@@ -310,11 +317,11 @@ func (p *LogsPanel) View() string {
 
 	if allTotal == 0 {
 		empty := mutedText("No output yet.  Select a playbook → [r] to run,  or [!] for ad-hoc.")
-		return title + "\n" + empty
+		return clipWidth(title+"\n"+empty, p.width)
 	}
 	if total == 0 {
 		empty := mutedText(fmt.Sprintf("No %s lines.  Press [f] to change filter.", p.filter.Label()))
-		return title + "\n" + empty
+		return clipWidth(title+"\n"+empty, p.width)
 	}
 
 	// ── Build match lookup for highlight rendering ────────────────────────
@@ -372,7 +379,7 @@ func (p *LogsPanel) View() string {
 		}
 	}
 
-	return sb.String()
+	return clipWidth(sb.String(), p.width)
 }
 
 func (p *LogsPanel) renderTitle(filteredTotal, allTotal, contentH int) string {
@@ -465,6 +472,9 @@ func (p *LogsPanel) renderTitle(filteredTotal, allTotal, contentH int) string {
 // ─── Line rendering ───────────────────────────────────────────────────────────
 
 func renderLogLine(line core.LogLine, maxW int, showTime bool) string {
+	if maxW <= 0 {
+		return ""
+	}
 	text := line.Text
 	trimmed := strings.TrimSpace(text)
 
@@ -488,25 +498,11 @@ func renderLogLine(line core.LogLine, maxW int, showTime bool) string {
 
 	// ── Truncate to visible width ─────────────────────────────────────────
 	avail := maxW - prefixW
-	if avail < 4 {
-		avail = 4
-	}
-	runes := []rune(text)
-	if len(runes) > avail {
-		text = string(runes[:avail-1]) + "…"
-	}
+	text = cellTruncate(text, avail)
 
 	styled := applyLogStyle(text, line.Level)
 	result := prefix + styled
-	// Final visual-width guard: strip ANSI and re-check against maxW.
-	if lipgloss.Width(result) > maxW {
-		runes := []rune(stripAnsiLogs(result))
-		if len(runes) > maxW-1 {
-			result = applyLogStyle(string([]rune(text)[:max2(0, maxW-prefixW-1)])+"…", line.Level)
-			result = prefix + result
-		}
-	}
-	return result
+	return cellTruncate(result, maxW)
 }
 
 // wrapCommandLine wraps a long command string across multiple visual lines,
@@ -550,7 +546,7 @@ func wrapCommandLine(text, prefix string, prefixW, maxW int) string {
 	}
 
 	for _, w := range words {
-		wLen := len([]rune(w))
+		wLen := lipgloss.Width(w)
 		capacity := avail
 		if !first {
 			capacity = contAvail
@@ -571,7 +567,7 @@ func wrapCommandLine(text, prefix string, prefixW, maxW int) string {
 	if len(lineWords) > 0 {
 		flush()
 	}
-	return sb.String()
+	return clipWidth(sb.String(), maxW)
 }
 
 func stripAnsiLogs(s string) string {
@@ -616,6 +612,9 @@ func isAnsibleHeader(s string) bool {
 
 // renderHeaderLine turns "TASK [foo] ***..." into a styled ── TASK [foo] ──── line.
 func renderHeaderLine(s string, maxW int) string {
+	if maxW <= 0 {
+		return ""
+	}
 	// Strip trailing asterisks and whitespace.
 	label := strings.TrimRight(s, "* ")
 	label = strings.TrimSpace(label)
@@ -633,12 +632,9 @@ func renderHeaderLine(s string, maxW int) string {
 	if maxLabelW < 4 {
 		maxLabelW = 4
 	}
-	labelRunes := []rune(label)
-	if len(labelRunes) > maxLabelW {
-		label = string(labelRunes[:maxLabelW-1]) + "…"
-	}
+	label = cellTruncate(label, maxLabelW)
 
-	fillLen := maxW - prefixW - len([]rune(label)) - 1
+	fillLen := maxW - prefixW - lipgloss.Width(label) - 1
 	if fillLen < minFill {
 		fillLen = minFill
 	}
@@ -646,13 +642,13 @@ func renderHeaderLine(s string, maxW int) string {
 
 	switch {
 	case strings.HasPrefix(label, "PLAY RECAP"), strings.HasPrefix(label, "TASKS RECAP"):
-		return recapHeaderStyle.Render(prefix + label + fill)
+		return cellTruncate(recapHeaderStyle.Render(prefix+label+fill), maxW)
 	case strings.HasPrefix(label, "PLAY"):
-		return playHeaderStyle.Render(prefix + label + fill)
+		return cellTruncate(playHeaderStyle.Render(prefix+label+fill), maxW)
 	case strings.HasPrefix(label, "TASK"):
-		return taskHeaderStyle.Render(prefix + label + fill)
+		return cellTruncate(taskHeaderStyle.Render(prefix+label+fill), maxW)
 	default:
-		return dimSepStyle.Render(prefix + label + fill)
+		return cellTruncate(dimSepStyle.Render(prefix+label+fill), maxW)
 	}
 }
 
