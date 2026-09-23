@@ -1,0 +1,4 @@
+---
+- name: Print the selected message
+  ansible.builtin.debug:
+    msg: "{{ demo_message }}"

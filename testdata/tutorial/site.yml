@@ -1,0 +1,14 @@
+---
+- name: Learn inventory, roles and tags
+  hosts: local
+  gather_facts: false
+  vars:
+    demo_message: Message supplied by site.yml
+  roles:
+    - role: demo
+      tags: [greeting]
+  tasks:
+    - name: Show the summary task
+      ansible.builtin.debug:
+        msg: This task has the summary tag
+      tags: [summary]

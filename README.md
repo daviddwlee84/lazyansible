@@ -10,6 +10,15 @@ The current fork changes are an early local trial on macOS and Linux. Build this
 checkout to try them; the upstream Homebrew, Scoop, and AUR packages install the
 upstream project, not these changes.
 
+## Start here / 使用指南
+
+- [Ansible 原生工作流程](docs/ansible-basics.zh-TW.md): inventory、playbook、role、tag 的關係，設定從哪裡來，以及這台電腦的 chezmoi / `~/.ansible` 配置。
+- [lazyansible 操作指南](docs/lazyansible-guide.zh-TW.md): 逐步練習 role/tag 導覽、執行確認、CLI 對照和目前限制。
+
+For role navigation, press uppercase `O`. For tags, focus Playbooks with `2`,
+select a playbook, then press `t`. Enter inspects; `r` opens a run review.
+The guides start with a debug-only project that actually contains a role and tags.
+
 ## Try this checkout
 
 Requires **Go 1.24.2+** to build. An existing Ansible installation is usable;
@@ -32,15 +41,20 @@ go build -o bin/lazyansible ./cmd/lazyansible
 A bare invocation opens the dashboard in a terminal. Noninteractive usage uses
 the CLI subcommands; it never opens a prompt implicitly.
 
-A disposable localhost fixture is included for trying the interface:
+A localhost tutorial project is included for learning the interface:
 
 ```sh
-./bin/lazyansible -C testdata/localhost -i inventory.ini -d .
+./bin/lazyansible -C testdata/tutorial -i inventory.ini -d .
 ```
 
-The fixture has no package installation or file-changing task. It demonstrates
-ok, changed, skipped, and ignored-failure output using debug actions. Press `r`
-on its playbook to review; the review initially selects Cancel.
+Select `site`, press `t` to choose `greeting` or `summary`, and press uppercase
+`O` to inspect the `demo` role. All authored tasks print debug messages; they do
+not install packages or change system configuration. Press `r` on the playbook
+to review; the review initially selects Cancel. Follow the
+[step-by-step walkthrough](docs/lazyansible-guide.zh-TW.md) for the exact keys.
+
+`testdata/localhost` remains a separate regression fixture for changed, skipped,
+and ignored-failure output. It intentionally has no roles or tags.
 
 To update this trial binary, update the checkout and run the same build command.
 There is deliberately no lazyansible self-updater yet. Ansible updates below are
