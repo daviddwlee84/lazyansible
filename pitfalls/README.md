@@ -5,8 +5,15 @@ non-obvious or recurring trap, preserving exact error text and the tested fix.
 Future investigations belong in [TODO.md](../TODO.md) and [backlog/](../backlog/README.md).
 Serious repeated rules belong in [AGENTS.md](../AGENTS.md), with a link back to the evidence.
 
-No separate debug incident has been promoted to its own note yet. These current
-integration caveats are already documented with their normal workflow:
+## Resolved incidents
+
+| Note | Symptom | Status |
+| --- | --- | --- |
+| [Ansible listing exceeds output cap](ansible-listing-exceeds-output-cap.md) | `oversized observation accepted: 4194305 <nil>` | Fixed; subprocess regression retained |
+
+## Cross-referenced workflow caveats
+
+These current integration caveats are already documented with their normal workflow:
 
 | Symptom | Documentation | Cause / boundary |
 | --- | --- | --- |

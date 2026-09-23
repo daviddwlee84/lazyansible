@@ -1,8 +1,8 @@
 # lazyansible 操作指南：從瀏覽到執行
 
-lazyansible 可以執行 playbook、role 和 ad-hoc module。**主畫面的 `Enter` 是查看，`r` 才是準備執行**；在執行確認畫面，預設選中 **Cancel**，按 `Tab` 選 **Run**，再按 `Enter` 才會啟動 Ansible。
+lazyansible 可以執行 playbook、role 和 ad-hoc module。先記住一條路徑：**選 playbook → `t` 調整 tags → `p` 觀察範圍 → `r` 確認 → Logs 看結果**。主畫面的 Enter 用來查看；Run review 預設選 **Cancel**，Tab 選 **Run** 後再按 Enter 才開始執行。
 
-如果現在只看到 YAML，表示你在 playbook 原始碼檢視器。按 `Esc` 回主畫面後，可以按大寫 **`O`** 開啟 Role Browser，或按 **`2` → `t`** 開啟目前 playbook 的 Tags Browser。
+大寫 **`O`** 開啟工作區的 Roles 分頁，不會離開目前的 playbook 上下文。Roles 裡的 **`r` 也是 review 目前 playbook**；直接跑單一 role 已移到明確標示的 Actions 操作。
 
 這份指南對應目前的 personal fork。Ansible 的 inventory、playbook、role、task、tag 概念，以及原生命令的使用方式，另見 [Ansible 基礎與原生操作](ansible-basics.zh-TW.md)。
 
@@ -10,43 +10,45 @@ lazyansible 可以執行 playbook、role 和 ad-hoc module。**主畫面的 `Ent
 
 ## 先找到正確的畫面
 
-主畫面的四個區域可直接用數字切換。終端機較窄時只顯示目前區域；按 `1`–`4` 仍能切換。
+主畫面有 Inventory、Playbooks、Status，以及含 **Logs / Roles / Preview** 的工作區。寬終端顯示上方資源區與下方工作區；窄終端顯示目前焦點。工作區的上下文列保留 playbook、inventory、limit、tags、模式和 cwd。
 
 | 位置 | 按鍵 | 結果 |
 | --- | --- | --- |
-| 主畫面 | `1` / `2` / `3` / `4` | Inventory / Playbooks / Status / Logs |
-| 主畫面 | `Tab` / `Shift+Tab` | 切換焦點 |
-| 清單 | `j/k` 或 `↓/↑` | 移動選擇 |
-| 清單 | `g` 或 `gg`、`G` | 第一項、最後一項；也可用 Home / End |
-| Inventory | `h/l` 或 `←/→` | 收合／回上層、展開／進入下一層 |
-| Inventory | `Enter` | 查看所選 host/group 的 Ansible inventory 解析結果 |
-| Inventory | `s` | 把所選 host/group 設成下一次執行的 `--limit` |
-| Playbooks | `Enter` 或 Space | 查看 YAML 原始碼 |
-| Playbooks | `r` | 檢查並顯示執行計畫，尚未執行 |
-| Playbooks | `c` / `d` | 切換 Ansible `--check` / `--diff` |
-| Playbooks | `t` / `e` | 選 tags / 設 extra-vars |
-| 主畫面 | 大寫 `O` | Role Browser；是英文字母 O，不是數字 0 |
-| 主畫面 | `:` | 搜尋可用操作，例如 roles、inventory、config、runtime |
-| 主畫面 | `?` | 目前焦點可用的按鍵；長說明可用 `j/k` 捲動 |
+| 主畫面 | `1` / `2` / `3` | Inventory / Playbooks / Status |
+| 主畫面 | Tab / Shift+Tab | 切換主要區域焦點 |
+| 主畫面 | `4` / 大寫 `O` / `p` | Logs / Roles / 重新觀察 Preview |
+| 工作區 | `[` / `]`、`Z` | 切換保留狀態的分頁、放大工作區 |
+| 清單 | `j/k` 或 `↓/↑`、`g` / `gg`、`G` | 移動、第一項、最後一項 |
+| Inventory | `h/l` 或 `←/→`、Space | 收合／展開群組 |
+| Inventory | Enter、`s` | 檢視 host/group；設定下一次的 `--limit` |
+| Playbooks | Enter 或 Space | 查看 YAML |
+| Playbooks／工作區 | `t`、`r` | 編輯 tags 草稿、review 目前 playbook |
+| Playbooks／工作區 | `c` / `d` / `e` | Check / diff / extra-vars |
+| Roles／Preview | Enter 或 `l`、`h` | 進入內容／右欄、回清單／左欄 |
+| Roles | `a` / `f` / `s` | 相關宣告／全部專案 roles、原始檔、建議宣告中的 tags |
+| 主畫面 | `:`、`?` | Actions、可捲動的 Help |
 
-`Enter` 檢視 host 不會同時設定執行範圍；要限定主機，另外按 `s`。Playbooks 區域會顯示目前的 limit、tags、check/diff 狀態。要清除 limit，先按 `:`，搜尋 `clear`，選 **Clear target limit**。
+`?` 是 **Help**，不是 Settings；要查看應用偏好，按 `:` 搜尋 `settings`。Help 裡可用 `j/k`、`g/G` 捲動。
 
-在 `/` 篩選欄、extra-vars 等文字欄位裡，`j`、`q`、`O`、`/` 都是文字。先按 `Enter` 結束篩選輸入，或按 `Esc` 返回，再使用導覽快捷鍵。若仍在 YAML 檢視器或其他彈出畫面，先按 `Esc` 回主畫面，再按 `2`、`t` 或 `O`。
+Enter 查看 host 不會同時更動執行範圍，另外按 `s` 才會設定 limit；清除時用 Actions 的 **Clear target limit**。文字欄位裡的 `j`、`q`、`O`、`/` 都是文字，Enter 結束篩選輸入後才恢復導覽。
 
-### Role Browser：入口與能力
+Tab 留給主要焦點切換；Roles 和 Preview 內部使用 `h/l` 與 Enter。YAML 檢視器可用 Esc 返回；工作區分頁則用 `[` / `]`、`4`、`O` 切換，或按 `2` 回 Playbooks。
 
-1. 在主畫面按大寫 `O`；也可先按 `:`，輸入 `role`，選 **Role browser**，按 `Enter`。
-2. 左側用 `j/k` 選 role；`/` 可依 role 名稱篩選。輸入後按 `Enter` 回到清單操作。
-3. `Enter`、`l` 或 `→` 把焦點移到右側；`j/k` 捲動內容。`h` 或 `←` 回左側；`Tab` 也可切換兩側。
-4. `r` 準備執行整個所選 role，進入同一個執行確認畫面。若只想看，逐層按 `Esc` 返回即可。
+### Roles：先看與目前 playbook 的關係
 
-`Esc` 會先結束篩選輸入，再清除保留的篩選文字；從右側摘要返回左側清單後，再按一次才關閉 Role Browser。因此有篩選或在右側時，回到主畫面可能需要多按幾次。
+1. 選定 playbook 後按大寫 `O`，或 Actions → **Role browser**。
+2. 預設是 **Related declarations**：目前檔案中觀察到的 role 宣告。相同 role 出現兩次仍是兩列，各自保留 play、宣告行與 tags。
+3. `j/k` 選列，Enter／`l` 看摘要；`h` 回清單。窄畫面會在清單與內容間切換。
+4. `a` 切成 **Project roles**，查看 `<工作目錄>/roles/` 的直接子目錄；再按 `a` 回相關宣告。兩種清單各自保留篩選與選擇。
+5. `f` 開啟原始檔清單：宣告所在 playbook，以及可找到的 tasks/defaults/vars/handlers/meta 主檔。Enter 開啟內容；Esc 回檔案清單，再 Esc 回 Roles。
 
-目前左側掃描的是 **`<工作目錄>/roles/` 下的直接子目錄**。右側把 role 的 `tasks/main.yml`、`defaults/main.yml`、`handlers/main.yml`、`meta/main.yml` 整理成 Tasks、Defaults、Handlers、Dependencies 摘要。
+目前關聯只觀察所選檔案中的 literal `roles:` 宣告。Imports、includes、Jinja role 名稱會標示未解析，不會遞迴追蹤；collections 和其他 `roles_path` 也不會被當成本機 `roles/` 自動掃描。沒有直接宣告不代表 playbook 沒有使用該 role。
 
-右側是可捲動的內容摘要，沒有可逐項點入的 task 樹；目前也不會遞迴展開 `include_tasks`、`import_tasks`、`when` 分支。只放在 collections 或其他 Ansible `roles_path` 的 role，不會自動出現在這個本機目錄瀏覽器。要看實際檔案，使用編輯器；要看原 playbook 的任務清單，使用原生 `ansible-playbook ... --list-tasks`。
+`r` 保留目前 playbook 上下文，進入它的 Run review。`t` 開啟標準 Tags 草稿；`s` 或 Actions 的 **Use this role's declared playbook tags**，則以這一列實際觀察到的宣告 tags 預填同一個 picker。Enter 會以這份草稿取代目前選擇，且同一 tag 可能選到其他 tasks，不能視為「只跑這個 role」。
 
-**直接跑 role 會建立一份只呼叫該 role 的臨時 playbook。** 它沿用目前選定的 inventory、limit、check/diff、tags、extra-vars 等執行設定，但不會重建原 playbook 的 `vars`、`vars_files`、`pre_tasks`、play 層級 `become`、`gather_facts` 或其他 role 的前後順序。若目的是「在原專案流程裡只跑某一部分」，通常先用原 playbook 加 `--tags`，比較能保留原來的執行上下文。
+**單獨執行 role 是另一個明確選擇。** 選可用的本機 role 後，按 `:` 搜尋 `standalone`，選 **Review standalone role (separate playbook context)**。它會為這份獨立計畫省略目前 playbook 的 tag filter，建立新的 role play，review 會標示上下文差異。它沿用目前 inventory、limit、check/diff、extra-vars，但不複製原 playbook 的 vars、vars_files、pre_tasks、play 層級 become、gather_facts 或其他 role 的順序。
+
+Esc 是分層返回：先退出輸入；原始檔預覽回檔案清單，再回 Roles；角色內容回左欄；清掉剩餘 filter。Roles 是保留的分頁，回 Playbooks 直接按 `2`，不必靠多次 Esc 關閉它。
 
 ### Tags Browser：實際選取流程
 
@@ -56,25 +58,27 @@ lazyansible 可以執行 playbook、role 和 ad-hoc module。**主畫面的 `Ent
 4. 在清單操作狀態按 `Enter`，將選擇套用到執行設定；這一步不會執行 playbook。
 5. 回主畫面按 `r`，在 review 確認 `Tags` 與命令中的 `--tags`。
 
-`a` 選取目前篩選後的所有 tags；大寫 `A` 清除全部已選 tags。要恢復不傳 `--tags` 的狀態，按 `t` → `A` → `Enter`。切換 playbook 時也要留意原本的 tags 是否仍符合新的選擇。
+`a` 選取目前篩選後的所有 tags；大寫 `A` 清除草稿。按 `t` → `A` → Enter 會套用「沒有 UI tag filter」。Esc 先退出／清除篩選，再取消整份草稿；取消保留原本已套用的 tags。套用後回到原來的工作區分頁、焦點和 playbook，狀態列會顯示結果。
 
-目前 tags 清單來自**所選 YAML 檔內的靜態掃描**：例如該檔的 play、task、block、`roles:` 宣告上的 `tags:`。它不會讀進被匯入的 playbook、role 內部 task 檔，或解析動態 include。`No tags found` 只代表這個掃描沒有找到，不代表執行時完全沒有可用 tags。
+Tags 會立即顯示本地 YAML 與已選 tags，再非同步呼叫 Ansible `--list-tags` 補充 catalogue。這個 catalogue 刻意不帶 UI 目前的 tag 選擇，但仍尊重繼承的 Ansible 設定／環境 filter。Discovery 失敗不會清空草稿；已選但未觀察到的 tag 會保留並標記。
 
-可在 Ansible 專案目錄用原生命令交叉確認：
+每個 playbook 的已套用 tags 在本次 session 中分別記住。切換 playbook 再切回來可繼續原本的選擇；這不是持久化 profile。改 tags 會讓舊 Preview 標示 stale，**不會自動跑 Preview 或 check mode**。
 
-```sh
-ansible-playbook -i inventory.ini site.yml --list-tags
-ansible-playbook -i inventory.ini site.yml --tags greeting --list-tasks
-```
-
-原生 `--list-tags`／`--list-tasks` 也不會展開動態 include 裡的 tags/tasks，因此仍不能當成完整執行流程圖。相關繼承與 include 行為見 [Ansible 官方 Tags 文件](https://docs.ansible.com/projects/ansible/latest/playbook_guide/playbooks_tags.html)。
-
-若已知正確 tag，但 TUI 尚未掃描出來，可直接透過本工具的 CLI 指定：
+原生清單仍可能漏掉 dynamic include 的子 tasks/tags，所以空清單不代表執行時絕對沒有 tags。詳見 [官方 Tags 文件](https://docs.ansible.com/projects/ansible/latest/playbook_guide/playbooks_tags.html)。CLI 可直接查同一份 catalogue：
 
 ```sh
+lazyansible -C /path/to/ansible -i inventory.ini inspect tags site.yml --json
 lazyansible -C /path/to/ansible -i inventory.ini \
-  run site.yml --tags greeting --dry-run
+  preview site.yml --tags greeting --json
 ```
+
+### Preview：觀察目前選擇，不是執行保證
+
+按 `p` 才會觀察／刷新目前 playbook。Preview 保留 **Hosts、Tasks、Tags、Ansible output** 四個區段；`j/k` 選區段，Enter／`l` 進入內容，`j/k` 捲動，`h`／Esc 回區段清單。`[`／`]` 只是切換已有分頁，不會重新發出查詢。
+
+觀察使用同一組 cwd、runtime、inventory、limit、tags 和 extra-vars，呼叫 native `--list-hosts --list-tasks --list-tags`。條件與 dynamic includes 仍可能在真正執行時改變工作，不能把列出的順序／數量當成完整執行圖。這些命令會載入 inventory/plugins，但不執行 playbook tasks。
+
+畫面區分尚未查詢、loading、stale、空匹配和失敗。切換選擇後，先前結果會標成 stale；按 `p` 更新。錯誤或未知輸出格式保留 **Ansible output**，不會把無法解析的資料偽裝成零個 hosts/tasks。查詢失敗時，上一份可用結果也會明確標成 stale。
 
 ## 預覽、check mode、真正執行的差別
 
@@ -82,6 +86,7 @@ lazyansible -C /path/to/ansible -i inventory.ini \
 | --- | --- |
 | `Enter` 查看 YAML、開啟 Role Browser | 讀取本機內容；不啟動 playbook 執行 |
 | Inventory / Config Inspector | 呼叫 Ansible 的 inventory/config 讀取命令；不是執行 playbook |
+| `p` 或 CLI `preview PLAYBOOK` | 呼叫 Ansible 的原生 list 選項，觀察 hosts/tasks/tags；不執行 playbook tasks |
 | TUI 的 `r`，或 CLI 的 `--dry-run` | 準備與驗證命令、解析使用的 runtime；不執行該 playbook／role／安裝或升級操作 |
 | `c` 開啟 `--check`，再確認 Run | **會啟動 Ansible**，以 check mode 處理任務 |
 | `d` 開啟 `--diff` | 要求支援的 module 顯示前後差異；本身不禁止變更 |
@@ -111,15 +116,19 @@ go build -o bin/lazyansible ./cmd/lazyansible
 1. 按 `1`，用 `j/k` 選 `localhost`，按 `s` 將 limit 設為該主機。
 2. 按 `2`，選 `site`。按 `Enter` 看 YAML，再按 `Esc` 回來。
 3. 按 `t` → `/`，輸入 `greeting` → `Enter` 結束篩選 → Space 勾選 → `Enter` 套用。
-4. 按 `r`。檢查工作目錄為 `testdata/tutorial`、inventory 為教學檔、limit 為 `localhost`、tags 為 `greeting`。
+4. 按 `p`，先看 Hosts 裡的 localhost、Tasks 裡的 demo role 工作；不應包含 summary task。Enter 進入內容，`h` 回區段。再按 `r`，檢查工作目錄為 `testdata/tutorial`、inventory 為教學檔、limit 為 `localhost`、tags 為 `greeting`。
 5. 第一次可直接按 `Enter`：因為預設選的是 Cancel，會取消回來。
 6. 再按 `r`，等計畫準備完成，按 `Tab` 選 Run，再按 `Enter` 執行。
-7. 按 `4` 看 Logs，應看到 `Message supplied by site.yml`。按 `3` 可看 host 狀態。
+7. 確認後會進入 Logs，應看到 `Message supplied by site.yml`。按 `3` 可看 host 狀態。完成訊息包含 exit status；Logs 的上下文保留這次實際執行的選擇。
 
 同樣的流程也能用 CLI 操作：
 
 ```sh
-# 只看計畫
+# 查 Ansible 的靜態執行範圍
+./bin/lazyansible -C testdata/tutorial -i inventory.ini \
+  preview site.yml --limit localhost --tags greeting
+
+# 只看命令計畫
 ./bin/lazyansible -C testdata/tutorial -i inventory.ini \
   run site.yml --limit localhost --tags greeting --dry-run
 
@@ -130,16 +139,14 @@ go build -o bin/lazyansible ./cmd/lazyansible
 
 ### 看 role，再體驗「直接跑 role」的差異
 
-先按 `2` → `t` → `A` → `Enter` 清除剛才的 tag，再按大寫 `O`。選 `demo`，用 `Enter`／`Tab` 看 Tasks 與 Defaults 摘要；這裡的 role 預設訊息是 `Default message from role demo`。
+按大寫 `O`，會看到 `site.yml` 宣告的 `demo`，而且有 play 名稱、來源行和 `greeting` tag。Enter 看摘要，`f` 查看宣告或 role 原始檔，Esc 分層回來。按 `s` 可把 `greeting` 放進標準 Tags 草稿；取消或套用都會回到 Roles。
 
-若在 Role Browser 按 `r`，review 後選 Run，執行的是臨時 playbook 呼叫的 `demo` role，訊息會使用 role 的預設值。原本 `site.yml` 裡的 `demo_message` 不會跟著複製過來。
+此時 `r` 準備的仍是 **site.yml**，因此沿用 play vars，訊息是 `Message supplied by site.yml`。要體驗獨立 role，改用 `:` → 搜尋 `standalone` → **Review standalone role**。Review 會顯示新的 role play，而且 tags 已清空。確認執行後，role 使用自己的 `Default message from role demo`。
 
-產生的 playbook 也沒有沿用 `site.yml` 的 `gather_facts: false`，所以這條直接 role 路徑可能先顯示 Gathering Facts；這同樣是執行上下文不同的結果。
-
-先清除 `greeting` 很重要：這個 tag 是 `site.yml` 的 role 宣告加上的，不是 `demo/tasks/main.yml` 自己的 task tag。直接 role 執行若仍帶 `--tags greeting`，可能把預期任務篩掉。
+產生的 play 不繼承 `site.yml` 的 `gather_facts: false`，所以獨立 role 路徑可能先 Gathering Facts。這項動作不是把父 playbook 裁成一段；先前 tasks、vars、handler 狀態也不會自動補回。
 
 ```sh
-# 直接 role 執行的命令計畫
+# 獨立 role 的命令計畫；CLI 只有明確提供 --tags 才會帶入該參數
 ./bin/lazyansible -C testdata/tutorial -i inventory.ini \
   role run roles/demo --hosts local --dry-run
 ```
@@ -161,7 +168,7 @@ go build -o bin/lazyansible ./cmd/lazyansible
 3. 在 Tags Browser 按 `/`，輸入 `neovim` → `Enter` → Space → `Enter`，把這個 tag 套用到下一次計畫。
 4. 按 `1`，選 `localhost`，按 `s`；再按 `2` 返回 playbook。啟動命令已開啟 check/diff，這裡不必再按 `c/d` 把它們關掉。
 5. 按 `r`，確認 cwd 是 `~/.ansible`、playbook 是 `playbooks/macos.yml`、limit 是 `localhost`、tag 是 `neovim`。**保留 Cancel，按 `Enter` 回來**，這次只練習到計畫。
-6. 按大寫 `O`，用 `/` 找 `neovim` role；結束篩選後用 `Enter` 看右側摘要。用 `Esc` 返回。這裡能瀏覽 `~/.ansible/roles/neovim`，不需要直接執行 role。
+6. 按大寫 `O`，用 `/` 找 `neovim` 宣告；結束篩選後用 Enter 看內容。`f` 查看本機 source，Esc 分層返回。要看其他本機 roles，按 `a` 切成 Project roles；回 Playbooks 按 `2`。這裡不需要獨立執行 role。
 
 如果按 `t` 顯示空白，先確認目前選中的是 `macos`，而且已離開 YAML 檢視器／篩選輸入；若按 `O` 找不到 role，確認 `-C` 是 `~/.ansible`，而不是 `~/.ansible/playbooks`。
 
@@ -225,7 +232,8 @@ Inventory Inspector 會額外把目前選中 playbook 所在目錄當作 `ansibl
 | --- | --- |
 | 看有哪些本機 playbook、roles，選 host/tag 後執行 | lazyansible TUI |
 | 已知所有參數，想先看命令、再執行或寫腳本 | `lazyansible run ... --dry-run`，確認後再執行 |
-| 使用本工具尚未提供的 Ansible flags，例如 `--list-tasks`、`--skip-tags` | 原生 `ansible-playbook` |
+| 使用本工具尚未提供的 Ansible flags，例如 `--skip-tags`、`--step` | 原生 `ansible-playbook` |
+| 觀察選定 playbook 的 hosts/tasks/tags | `p` 或 `lazyansible preview PLAYBOOK` |
 | 查看 inventory 解析結果、變更過的 Ansible config | `:` 的 Inspector，或 `lazyansible inspect inventory/config` |
 | 看目前用哪個 Ansible、Python、uv tool owner | `:` 搜尋 `runtime`，或 `lazyansible runtime status` |
 
@@ -239,4 +247,4 @@ lazyansible runtime upgrade --dry-run
 
 更多設定、XDG 路徑與版本管理方式見 [README](../README.md)。完整流程圖、`when` 分支與變數來源追蹤仍列在 [後續評估](../backlog/variable-provenance-graphs.md)，目前的 YAML／role 摘要不表示這些能力已實作。
 
-Tag／Role／Run 畫面如何保留操作上下文，以及執行步驟預覽、單步／局部執行的後續設計，另見 [下一輪工作台與執行預覽](../backlog/workspace-execution-ux.md)。這些是待實作與研究項目，目前沒有新增單步除錯按鈕。
+工作區與靜態 Preview 的設計記錄見 [工作台與執行預覽](../backlog/workspace-execution-ux.md)。單步／局部執行和互動 debugger 仍是另外的研究題目，目前沒有單步除錯按鈕。

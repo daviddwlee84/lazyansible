@@ -76,6 +76,7 @@ func TestAdHocArgsRetainSpacesAndShortcutLetters(t *testing.T) {
 
 func TestRoleEnterInspectsAndFilterDoesNotRun(t *testing.T) {
 	o := newRolesOverlay(80, 24)
+	o.projectMode = true
 	o.roles = []*roles.Role{{Name: "jqkhl/? role", Path: "/roles/one"}, {Name: "web", Path: "/roles/web"}}
 	if cmd := o.Update(overlayKey("enter")); cmd != nil || o.pane != 1 {
 		t.Fatal("Enter should inspect, never run")
@@ -91,13 +92,16 @@ func TestRoleEnterInspectsAndFilterDoesNotRun(t *testing.T) {
 	if cmd := o.Update(overlayKey("enter")); cmd != nil {
 		t.Fatal("filter enter must not emit a run")
 	}
-	if got := o.Update(overlayKey("r"))().(RoleRunMsg); got.RolePath != "/roles/one" {
-		t.Fatalf("review request = %+v", got)
+	if cmd := o.Update(overlayKey("r")); cmd != nil {
+		t.Fatal("role model must not map r to standalone execution")
+	}
+	if got, ok := o.StandaloneRequest(); !ok || got.RolePath != "/roles/one" || got.Tags != "" {
+		t.Fatalf("explicit standalone request=%+v ok=%v", got, ok)
 	}
 	o.Update(overlayKey("/"))
 	typeOverlay(o.Update, "missing")
 	o.Update(overlayKey("enter"))
-	if cmd := o.Update(overlayKey("r")); cmd != nil {
+	if _, ok := o.StandaloneRequest(); ok {
 		t.Fatal("empty filtered roles must not run hidden selection")
 	}
 }

@@ -15,8 +15,9 @@ upstream project, not these changes.
 - [Ansible 原生工作流程](docs/ansible-basics.zh-TW.md): inventory、playbook、role、tag 的關係，設定從哪裡來，以及這台電腦的 chezmoi / `~/.ansible` 配置。
 - [lazyansible 操作指南](docs/lazyansible-guide.zh-TW.md): 逐步練習 role/tag 導覽、執行確認、CLI 對照和目前限制。
 
-For role navigation, press uppercase `O`. For tags, focus Playbooks with `2`,
-select a playbook, then press `t`. Enter inspects; `r` opens a run review.
+For role navigation, press uppercase `O`. For tags, select a playbook and press
+`t`. Press `p` to observe its hosts/tasks/tags. In Roles, Enter inspects and `r`
+reviews the current playbook; standalone role execution is an explicit Actions entry.
 The guides start with a debug-only project that actually contains a role and tags.
 
 ## Try this checkout
@@ -62,33 +63,61 @@ a separate operation. See the [release follow-up](backlog/release-and-upgrade.md
 
 ## Everyday interaction
 
-The main screen keeps inventory, playbooks, host status, and logs together.
-`:`, the action palette, exposes configuration inspection, resolved inventory,
-Ansible runtime management, and lazyansible settings without memorizing keys.
-`?` shows actions applicable to the focused panel.
+The main screen keeps Inventory, Playbooks and Status beside a persistent
+workspace with **Logs / Roles / Preview** tabs. Tags and Run review use the same
+workspace context: selected playbook, inventory, limit, tags, check/diff and cwd.
+Logs retain the context of the actual run when you browse another playbook.
 
 | Context | Keys | Action |
 | --- | --- | --- |
 | Navigation | Arrows or `j` / `k`; `g` / `gg`, `G` | Move, first, last |
-| Focus | Tab / Shift+Tab, `1`–`4` | Switch panels |
+| Major focus | Tab / Shift+Tab, `1`–`3` | Switch Inventory / Playbooks / Status / workspace focus |
+| Workspace | `4`, `O`, `p` | Logs; Roles; refresh the selected playbook's Preview |
+| Workspace | `[` / `]`, `Z` | Switch retained tabs; zoom the workspace |
 | Inventory | `h` / `l`, Left / Right, Space | Collapse, expand, toggle groups |
 | Inventory | Enter; `s` | Inspect selection; set host/group limit |
-| Playbooks | Enter / Space; `r` | View source; review a run |
-| Playbooks | `c`, `d`, `t`, `e` | Check mode, diff mode, tags, extra variables |
-| Lists and logs | `/`; Esc | Search/filter; leave input or go back |
+| Playbooks | Enter / Space | View source |
+| Playbooks / workspace | `r`, `t`, `c`, `d`, `e` | Review current playbook, tags, check, diff, extra variables |
+| Roles | Enter / `l`; `h` | Detail focus; list focus |
+| Roles | `a`, `f`, `s` | Related declarations/project roles; source files; suggest observed declaration tags |
+| Lists and logs | `/`; Esc | Search/filter; leave the nearest input/detail state |
 | Logs | `n` / `N`, `G`, Ctrl+D / Ctrl+U | Search matches, follow bottom, half-page scroll |
-| Anywhere outside a field | `:`, `?`, `q` | Actions, help, quit |
+| Outside a field | `:`, `?`, `q` | Actions, scrollable Help, quit |
 
-Text fields own printable keys: typing `j`, `q`, or `/` does not navigate or quit.
-Outside the inventory tree, `h` / `l` also changes panel focus. History (`H`), run
-profiles (`F`), SSH profiles (`P`), role browsing (`O`), ad-hoc commands (`!`),
-Vault (`V`), Galaxy (`A`), and inventory switching remain available through help
-and the action palette.
+Text fields own printable keys. Tab changes major focus; `h/l` and Enter operate
+inside Roles or Preview. Narrow screens show the focused area, while `Z` gives
+the workspace more room. `?` is Help; application settings are a separate entry
+in the `:` action palette.
 
-Before a playbook, ad-hoc, or role execution, review shows the project directory,
-inventory/target, active Ansible runtime, flags, and a redacted command. The CLI
-and TUI use the same preparation and execution service. Background observations
-and running commands leave navigation available; Esc returns from an inspector.
+Tags are a draft: Space toggles, Enter applies, and leaving with Esc cancels.
+The picker shows local tags immediately and merges an asynchronous Ansible tag
+catalogue without changing your draft. Selections are remembered per playbook
+for this session. Clearing tags means no explicit UI `--tags` filter; inherited
+Ansible filters still apply.
+
+Roles starts with declarations observed in the selected playbook. Repeated
+references keep their play and source line; imports, includes, templated names
+and unavailable sources remain explicitly unresolved. `a` switches to all local
+project roles. `f` opens source selection and preview within the workspace. `s`
+suggests only observed declaration tags for the normal picker; it never turns a
+role name into a tag. Such tags can select other tasks too.
+
+`r` always reviews the current playbook from Roles. To deliberately run a local
+role alone, use `:` → **Review standalone role**. That action omits parent-playbook
+tags from its separate play; it does not reproduce the parent playbook's
+vars, pre-tasks, handlers or execution order.
+
+`p` explicitly calls Ansible's native list options and shows **Hosts, Tasks,
+Tags, and Ansible output**. Changing a selection marks the observation stale;
+press `p` to refresh. Switching tabs or applying tags does not automatically
+start another preview or a check-mode run. Unknown output formats retain raw
+Ansible output instead of inventing structured rows.
+
+Run review starts on Cancel and distinguishes Apply, Check and standalone role
+execution. Confirming Run switches to Logs; a completion message reports the
+exit status. History (`H`), profiles (`F` / `P`), ad-hoc modules (`!`), Vault (`V`),
+Galaxy (`A`), inspectors and runtime management remain in contextual help and
+Actions. CLI and TUI use the same request, preparation and execution services.
 
 ## Preferences and storage
 
@@ -186,6 +215,8 @@ an upgrade, and `i` reviews installation.
 ```sh
 ./bin/lazyansible -C /path/to/ansible inspect inventory --json
 ./bin/lazyansible -C /path/to/ansible inspect config --json
+./bin/lazyansible -C /path/to/ansible inspect tags playbooks/site.yml --json
+./bin/lazyansible -C /path/to/ansible preview playbooks/site.yml --tags greeting --json
 ./bin/lazyansible -C /path/to/ansible run playbooks/site.yml --check --diff --dry-run
 ./bin/lazyansible -C /path/to/ansible adhoc all -m ansible.builtin.ping --dry-run
 ./bin/lazyansible -C /path/to/ansible role run roles/example --hosts staging --dry-run
@@ -193,13 +224,17 @@ an upgrade, and `i` reviews installation.
 
 Execution commands print the plan and request one confirmation in a terminal.
 Use `--yes` for explicit noninteractive execution. `--dry-run` prepares the same
-command without executing it; `--json` supports observations and dry-run plans,
+command without executing it. `preview` additionally invokes native list commands
+without executing playbook tasks; `--check` runs Ansible check mode after review.
+`--json` supports observations and dry-run plans,
 not execution. Diagnostics go to stderr. Child exit status is preserved, usage
 errors return 2, and cancellation returns 130.
 
 Inventory inspection uses `ansible-inventory --list`; configuration inspection
 uses changed settings and origins reported by `ansible-config`. These observations
-are **not complete task-time variables or variable provenance**. Facts, dynamic
+are **not complete task-time variables or variable provenance**.
+Execution preview is likewise a static observation, not a complete execution
+graph: dynamic includes and runtime conditions can change the tasks that run. Facts, dynamic
 includes, role/task context, and extra variables can change execution results.
 Sensitive keys and command arguments are redacted, but arbitrary output from an
 Ansible task can still contain whatever that task prints.

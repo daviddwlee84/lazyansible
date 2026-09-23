@@ -65,7 +65,7 @@ func TestBackgroundRunEventsReachEveryOverlay(t *testing.T) {
 				t.Fatalf("completion replaced mode %d with %d", mode, a.mode)
 			}
 			lines := a.logsPanel.Lines()
-			if len(lines) != 1 || lines[0].Text != "finished task" {
+			if len(lines) != 2 || lines[0].Text != "finished task" || !strings.Contains(lines[1].Text, "Exit code 2") {
 				t.Fatalf("mode %d lost logs: %+v", mode, lines)
 			}
 			if len(a.retryHosts) != 1 || a.retryHosts[0] != "web-a" {

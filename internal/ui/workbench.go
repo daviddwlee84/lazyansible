@@ -39,6 +39,7 @@ type workbenchModel struct {
 	err, source, target string
 	runtime             ansible.RuntimeStatus
 	update              ansible.UpdateStatus
+	projectOverride     *ansible.ProjectContext
 }
 
 func newWorkbench() *workbenchModel {
@@ -142,6 +143,7 @@ func (a *App) projectContext() ansible.ProjectContext {
 }
 func (a *App) openWorkbench(topic, target string) tea.Cmd {
 	w := a.workbench
+	w.projectOverride = nil
 	if w.cancel != nil {
 		w.cancel()
 	}
@@ -169,6 +171,9 @@ func (a *App) inspectCmd() tea.Cmd {
 	w.generation++
 	generation, topic := w.generation, w.topic
 	project := a.projectContext()
+	if w.projectOverride != nil {
+		project = *w.projectOverride
+	}
 	configPath := a.config.ConfigPath
 	ctx, cancel := context.WithTimeout(a.ctx, 30*time.Second)
 	if w.cancel != nil {
@@ -260,6 +265,16 @@ func (a *App) updateWorkbenchResult(msg tea.Msg) (tea.Cmd, bool) {
 		if m.id != a.runtimeID {
 			return nil, true
 		}
+		previous := a.workbench.runtime
+		if previous.Executable == "" && a.executionPreview.result != nil {
+			previous = a.executionPreview.result.Runtime
+		}
+		if previous.Executable == "" && a.review.plan != nil {
+			previous = a.review.plan.Runtime
+		}
+		if previous.Executable != "" && m.status.Executable != "" && runtimeIdentity(previous) != runtimeIdentity(m.status) {
+			a.invalidateExecution("Observed Ansible runtime changed")
+		}
 		if a.workbench.update.Runtime.ToolVersion != "" && a.workbench.update.Runtime.ToolVersion != m.status.ToolVersion {
 			a.workbench.update = ansible.UpdateStatus{State: "unknown", Runtime: m.status}
 		}
@@ -287,9 +302,10 @@ func (a *App) updateWorkbenchResult(msg tea.Msg) (tea.Cmd, bool) {
 		}
 		return nil, true
 	case runtimeChangedMsg:
+		a.invalidateExecution("Ansible runtime changed")
 		a.runtimeBusy = false
 		if a.quitting {
-			return tea.Quit, true
+			return a.quitWhenIdle(), true
 		}
 		if m.err != nil {
 			a.statusMsg = "Runtime change failed: " + m.err.Error()
@@ -307,12 +323,26 @@ func (a *App) updateWorkbenchResult(msg tea.Msg) (tea.Cmd, bool) {
 	case runPreparedMsg:
 		return a.acceptRunPlan(m), true
 	case historySavedMsg:
+		if a.historyJobs > 0 {
+			a.historyJobs--
+		}
 		if m.err != nil {
 			a.statusMsg = "Run completed; history could not be saved: " + m.err.Error()
 		}
-		return nil, true
+		return a.quitWhenIdle(), true
 	}
 	return nil, false
+}
+
+func runtimeIdentity(r ansible.RuntimeStatus) string {
+	return strings.Join([]string{r.Executable, r.PlaybookExecutable, r.CoreVersion, r.Python, r.PythonVersion, r.ToolVersion}, "\x00")
+}
+
+func (a *App) openRunHostInspector(target string) tea.Cmd {
+	_ = a.openWorkbench("inventory", target)
+	project := a.lastRunRequest.Project
+	a.workbench.projectOverride = &project
+	return a.inspectCmd()
 }
 func (a *App) updateWorkbench(msg tea.Msg) tea.Cmd {
 	defer a.syncWorkbenchLayout()

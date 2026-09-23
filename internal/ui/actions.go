@@ -19,6 +19,7 @@ type action struct {
 }
 
 func (a *App) actions() []action {
+	playbookReady := a.pbPanel.SelectedPlaybook() != nil && a.pendingProfile == nil && !a.profileNeedsSelection
 	actions := []action{
 		{"palette", "Actions", []string{":"}, "palette", true},
 		{"config", "Inspect Ansible configuration", nil, "config", true},
@@ -33,10 +34,11 @@ func (a *App) actions() []action {
 		{"inventory-panel", "Inventory panel", []string{"1"}, "legacy", true},
 		{"playbooks-panel", "Playbooks panel", []string{"2"}, "legacy", true},
 		{"status-panel", "Status panel", []string{"3"}, "legacy", true},
-		{"logs-panel", "Logs panel", []string{"4"}, "legacy", true},
+		{"workspace-logs", "Workspace: Logs", []string{"4"}, "workspace-logs", true},
 		{"adhoc", "Ad-hoc module", []string{"!"}, "legacy", !a.running && !a.runtimeBusy},
 		{"history", "Run history", []string{"H"}, "legacy", true},
-		{"roles", "Role browser", []string{"O"}, "legacy", true},
+		{"workspace-roles", "Role browser", []string{"O"}, "workspace-roles", true},
+		{"execution-preview", "Preview selected playbook scope", []string{"p"}, "execution-preview", playbookReady && !a.runtimeBusy},
 		{"ssh", "SSH profiles", []string{"P"}, "legacy", true},
 		{"profiles", "Run profiles", []string{"F"}, "legacy", true},
 		{"galaxy", "Galaxy roles and collections", []string{"A"}, "legacy", !a.runtimeBusy},
@@ -44,8 +46,8 @@ func (a *App) actions() []action {
 		{"reload", "Refresh project", []string{"I"}, "legacy", true},
 		{"retry", "Limit to failed hosts", []string{"R"}, "legacy", len(a.retryHosts) > 0 && !a.running},
 	}
-	if a.focused != core.PanelLogs {
-		actions = append(actions, action{"environment", "Switch inventory", []string{"N"}, "legacy", true})
+	if !a.workspaceLogsActive() {
+		actions = append(actions, action{"environment", "Switch inventory", []string{"N"}, "environment", true})
 	} else {
 		actions = append(actions, action{"environment", "Switch inventory", nil, "environment", true})
 	}
@@ -56,7 +58,9 @@ func (a *App) actions() []action {
 	panel("up", "Up", true, "k", "up")
 	panel("top", "Top (g / gg)", true, "g", "home")
 	panel("bottom", "Bottom", true, "G", "end")
-	panel("filter", "Search / filter", a.focused != core.PanelStatus, "/")
+	if !a.workspaceFocused() || a.workspace.tab != workspacePreview {
+		panel("filter", "Search / filter", a.focused != core.PanelStatus, "/")
+	}
 	if a.focused == core.PanelInventory {
 		panel("inspect-host", "Inspect selection", a.invPanel.SelectedHost() != "" || a.invPanel.SelectedGroup() != "", "enter")
 		panel("limit", "Set target limit", a.invPanel.SelectedHost() != "" || a.invPanel.SelectedGroup() != "", "s")
@@ -80,14 +84,39 @@ func (a *App) actions() []action {
 	if a.focused == core.PanelStatus {
 		panel("inspect-status", "Inspect host", true, "enter")
 	}
-	if a.focused == core.PanelLogs {
+	if a.workspaceFocused() {
+		actions = append(actions,
+			action{"workspace-previous", "Previous workspace tab", []string{"["}, "workspace-previous", true},
+			action{"workspace-next", "Next workspace tab", []string{"]"}, "workspace-next", true},
+			action{"workspace-zoom", "Zoom workspace", []string{"Z"}, "workspace-zoom", true},
+			action{"run", "Review current playbook", []string{"r"}, "draft", playbookReady && !a.running && !a.linting && !a.runtimeBusy},
+			action{"tags", "Select playbook tags", []string{"t"}, "draft", playbookReady},
+			action{"check", "Toggle check mode", []string{"c"}, "draft", true},
+			action{"diff", "Toggle diff mode", []string{"d"}, "draft", true},
+			action{"extra-vars", "Extra variables", []string{"e"}, "legacy", playbookReady},
+		)
+		if a.workspace.tab != workspaceLogs {
+			panel("detail", "Inspect selected content", true, "enter")
+			panel("detail-left", "List focus", true, "h", "left")
+			panel("detail-right", "Detail focus", true, "l", "right")
+		}
+		if a.workspace.tab == workspaceRoles {
+			panel("role-scope", "Related / all project roles", true, "a")
+			panel("role-source", "Browse role source files", true, "f")
+			actions = append(actions,
+				action{"role-tags", "Use this role's declared playbook tags", []string{"s"}, "role-tags", a.roleTagsAvailable()},
+				action{"standalone-role", "Review standalone role (separate playbook context)", nil, "standalone-role", a.standaloneRoleAvailable() && !a.running && !a.linting && !a.runtimeBusy},
+			)
+		}
+	}
+	if a.workspaceLogsActive() {
 		panel("next-match", "Next match", true, "n")
 		panel("previous-match", "Previous match", true, "N")
 		panel("log-filter", "Cycle log status filter", true, "f")
 		panel("timestamps", "Toggle timestamps", true, "T")
 		panel("half-down", "Half page down", true, "ctrl+d")
 		panel("half-up", "Half page up", true, "ctrl+u")
-		actions = append(actions, action{"fullscreen", "Toggle full-screen logs", []string{"Z"}, "legacy", true}, action{"export", "Export logs", []string{"X"}, "legacy", true}, action{"clear-logs", "Clear logs", []string{"ctrl+l"}, "legacy", true})
+		actions = append(actions, action{"export", "Export logs", []string{"X"}, "legacy", true}, action{"clear-logs", "Clear logs", []string{"ctrl+l"}, "legacy", true})
 	}
 	return actions
 }
@@ -102,7 +131,7 @@ func (a *App) actionForKey(key string) (action, bool) {
 	return action{}, false
 }
 func (a *App) updateNormalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if (a.focused == core.PanelLogs && a.logsPanel.SearchActive()) || (a.focused == core.PanelInventory && a.invPanel.FilterActive()) || (a.focused == core.PanelPlaybooks && a.pbPanel.FilterActive()) {
+	if a.workspaceInputActive() || (a.focused == core.PanelInventory && a.invPanel.FilterActive()) || (a.focused == core.PanelPlaybooks && a.pbPanel.FilterActive()) {
 		return a, a.delegateToPanel(msg)
 	}
 	if v, ok := a.actionForKey(msg.String()); ok {
@@ -126,6 +155,37 @@ func (a *App) dispatchAction(v action) tea.Cmd {
 		return nil
 	}
 	switch v.kind {
+	case "workspace-logs":
+		a.openWorkspace(workspaceLogs)
+		return nil
+	case "workspace-roles":
+		return a.openRolesWorkspace()
+	case "execution-preview":
+		return a.openExecutionPreview()
+	case "workspace-previous":
+		return a.cycleWorkspace(-1)
+	case "workspace-next":
+		return a.cycleWorkspace(1)
+	case "workspace-zoom":
+		a.workspace.zoom = !a.workspace.zoom
+		a.resizePanels()
+		return nil
+	case "role-tags":
+		return a.applyRoleTags()
+	case "standalone-role":
+		return a.reviewStandaloneRole()
+	case "draft":
+		switch v.id {
+		case "run":
+			return a.reviewCurrentPlaybook()
+		case "tags":
+			return a.openTagsDraft(nil)
+		case "check":
+			a.toggleDraftCheck()
+		case "diff":
+			a.toggleDraftDiff()
+		}
+		return nil
 	case "panel":
 		if v.id == "view" && a.pendingProfile == nil {
 			a.profileNeedsSelection = false
@@ -167,6 +227,12 @@ func (a *App) actionFooter() string {
 	if a.width < 1 {
 		return ""
 	}
+	if a.mode == AppModeRunReview {
+		return ansi.Truncate("Tab choose · Enter confirm · j/k scroll · Esc cancel", a.width, "")
+	}
+	if a.mode == AppModeTagsBrowser {
+		return ansi.Truncate("Tags · / filter · Space toggle · Enter apply · Esc back", a.width, "")
+	}
 	var parts []string
 	switch a.focused {
 	case core.PanelInventory:
@@ -174,7 +240,14 @@ func (a *App) actionFooter() string {
 	case core.PanelPlaybooks:
 		parts = []string{"enter view", "r review", "c check", "d diff"}
 	case core.PanelLogs:
-		parts = []string{"/ search", "n/N matches", "G follow"}
+		switch a.workspace.tab {
+		case workspaceRoles:
+			parts = []string{"enter inspect", "h/l detail", "t tags", "r review"}
+		case workspacePreview:
+			parts = []string{"h/l detail", "p refresh", "t tags", "r review"}
+		default:
+			parts = []string{"/ search", "n/N matches", "G follow"}
+		}
 	case core.PanelStatus:
 		parts = []string{"enter inspect", "j/k select"}
 	}
@@ -191,6 +264,9 @@ func (a *App) actionFooter() string {
 		}
 	}
 	hint := strings.Join(labels, " · ") + " · : actions · ? help"
+	if a.workspaceFocused() {
+		hint = "[ ] tabs · " + hint
+	}
 	if a.width < 90 {
 		return ansi.Truncate(hint, a.width, "")
 	}
@@ -203,9 +279,9 @@ func (a *App) actionFooter() string {
 func helpGroup(v action) int {
 	switch v.id {
 	case "down", "up", "top", "bottom", "focus-next", "focus-prev",
-		"inventory-panel", "playbooks-panel", "status-panel", "logs-panel":
+		"inventory-panel", "playbooks-panel", "status-panel", "workspace-logs", "workspace-previous", "workspace-next":
 		return 1
-	case "tags", "extra-vars", "lint", "edit", "fullscreen", "export", "clear-logs":
+	case "run", "check", "diff", "tags", "extra-vars", "lint", "edit", "workspace-zoom", "export", "clear-logs":
 		return 0
 	}
 	if v.kind == "panel" {
@@ -253,6 +329,9 @@ func (a *App) helpRows(width int) []string {
 		}
 	}
 	panelNames := []string{"Inventory", "Playbooks", "Status", "Logs"}
+	if a.workspaceFocused() {
+		panelNames[3] = a.workspaceTitle()
+	}
 	titles := []string{panelNames[int(a.focused)] + " · current panel", "Navigation", "Global actions"}
 	sectionStyle := lipgloss.NewStyle().Foreground(colorBorderFocus).Bold(true)
 	var rows []string

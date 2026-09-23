@@ -1,0 +1,5 @@
+
+playbook: site.yml
+
+  play #1 (local): Learn inventory, roles and tags	TAGS: []
+      TASK TAGS: [greeting, summary]

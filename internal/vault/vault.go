@@ -53,7 +53,14 @@ func WriteTempPassword(password string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
-	_, err = f.WriteString(password + "\n")
-	return f.Name(), err
+	if _, err = f.WriteString(password + "\n"); err != nil {
+		_ = f.Close()
+		_ = os.Remove(f.Name())
+		return "", err
+	}
+	if err = f.Close(); err != nil {
+		_ = os.Remove(f.Name())
+		return "", err
+	}
+	return f.Name(), nil
 }

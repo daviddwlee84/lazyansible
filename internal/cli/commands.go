@@ -172,6 +172,7 @@ func runtimeCommand(f *flags, options Options) *cobra.Command {
 
 func inspectCommand(f *flags) *cobra.Command {
 	group := commandGroup(f, "inspect", "Read Ansible inventory and configuration in project context")
+	group.AddCommand(inspectTagsCommand(f))
 	group.AddCommand(&cobra.Command{Use: "inventory", Short: "Read resolved hosts, groups, and redacted inventory variables", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
 		e, err := loadEffective(cmd, f)
 		if err != nil {
@@ -212,9 +213,15 @@ type runFlags struct {
 func addRunFlags(cmd *cobra.Command, r *runFlags) {
 	cmd.Flags().BoolVarP(&r.yes, "yes", "y", false, "Execute after printing the command without prompting")
 	cmd.Flags().BoolVar(&r.dryRun, "dry-run", false, "Print the validated, redacted plan without executing")
+	addScopeFlags(cmd, r, true)
+}
+
+func addScopeFlags(cmd *cobra.Command, r *runFlags, includeTags bool) {
 	cmd.Flags().BoolVarP(&r.become, "become", "b", false, "Request Ansible privilege escalation")
 	cmd.Flags().StringVarP(&r.limit, "limit", "l", "", "Limit execution to matching hosts")
-	cmd.Flags().StringVarP(&r.tags, "tags", "t", "", "Comma-separated Ansible tags")
+	if includeTags {
+		cmd.Flags().StringVarP(&r.tags, "tags", "t", "", "Comma-separated Ansible tags")
+	}
 	cmd.Flags().StringArrayVarP(&r.extra, "extra-vars", "e", nil, "Extra variables or @file (repeatable; hidden from previews)")
 	cmd.Flags().StringVar(&r.vault, "vault-password-file", "", "Existing vault password file (not copied into history)")
 }
@@ -254,13 +261,7 @@ func runRequest(cmd *cobra.Command, options Options, f *flags, r *runFlags, kind
 	if err != nil {
 		return err
 	}
-	req := ansible.RunRequest{Kind: kind, Project: project(e), Hosts: r.hosts, Module: r.module, Args: r.args, Limit: r.limit, Tags: r.tags, Check: e.Config.DefaultCheckMode, Diff: e.Config.DefaultDiffMode, Become: r.become, ExtraVars: r.extra, VaultPasswordFile: r.vault, Executable: e.Config.Runtime.Executable}
-	switch kind {
-	case "role":
-		req.RolePath = target
-	case "playbook":
-		req.Playbook = target
-	}
+	req := requestFromFlags(e, r, kind, target)
 	plan, err := ansible.Prepare(cmd.Context(), req)
 	if err != nil {
 		return err
@@ -270,6 +271,17 @@ func runRequest(cmd *cobra.Command, options Options, f *flags, r *runFlags, kind
 		return err
 	}
 	return executePlan(cmd, plan)
+}
+
+func requestFromFlags(e effective, r *runFlags, kind, target string) ansible.RunRequest {
+	req := ansible.RunRequest{Kind: kind, Project: project(e), Hosts: r.hosts, Module: r.module, Args: r.args, Limit: r.limit, Tags: r.tags, Check: e.Config.DefaultCheckMode, Diff: e.Config.DefaultDiffMode, Become: r.become, ExtraVars: r.extra, VaultPasswordFile: r.vault, Executable: e.Config.Runtime.Executable}
+	switch kind {
+	case "role":
+		req.RolePath = target
+	case "playbook":
+		req.Playbook = target
+	}
+	return req
 }
 
 func commandGroup(f *flags, use, short string) *cobra.Command {

@@ -6,7 +6,6 @@ documented in [README.md](README.md), not this index.
 
 ## P1
 
-- [ ] **[L] Keep tag, role and execution views in one workspace** — Preserve selected project/playbook context, make tag application and role actions explicit, and add task/host/tag previews before a styled shared run review and result. → [research](backlog/workspace-execution-ux.md)
 
 ## P2
 
@@ -22,6 +21,8 @@ No additional deferred work selected.
 - [ ] **[?/L] Evaluate partial execution and interactive task debugging** — Compare native step/start-at-task and failure-debugger handoff against an embedded session; establish context, cancellation and terminal-ownership limits before implementation. → [research](backlog/workspace-execution-ux.md#interactive-step-debugging)
 
 ## Done
+
+- ✅ [2026-09-23] [P1/L] Keep tag, role and execution views in one workspace — Added persistent context, tag drafts and native tag discovery, related role sources, native scope preview, and shared reviewed execution/result.
 
 Completed current-session work belongs in [CHANGELOG.md](CHANGELOG.md). Promote
 future entries here with their date and original priority/effort when implemented.

@@ -209,11 +209,13 @@ lazyansible 增加的是專案選擇、檢視、操作確認與結果呈現。�
 ```sh
 ./bin/lazyansible -C testdata/tutorial -i inventory.ini -d .
 ./bin/lazyansible -C testdata/tutorial -i inventory.ini inspect inventory --json
+./bin/lazyansible -C testdata/tutorial -i inventory.ini inspect tags site.yml --json
+./bin/lazyansible -C testdata/tutorial -i inventory.ini preview site.yml --tags greeting
 ./bin/lazyansible -C testdata/tutorial -i inventory.ini run site.yml --tags greeting --dry-run
 ```
 
 在 lazyansible 中，`-C`／`--chdir` 選工作目錄，`-d` 選擇要掃描 playbook 的目錄。**原生 `ansible-playbook -C` 則是 check mode**，兩個程式的縮寫不同；跨工具時直接寫 `--chdir` 或 `--check` 最清楚。
 
-lazyansible 的 `--dry-run` 只產生並顯示執行計畫，不執行 playbook；`--check` 才是把 Ansible check mode 傳入實際執行。Inventory／config inspector 可以幫你確認解析結果，但不是所有 task 當下變數與來源的完整證明。
+lazyansible 的 `--dry-run` 只產生並顯示命令計畫，不執行 playbook；`preview` 則呼叫原生 list 選項觀察 hosts/tasks/tags，不執行 playbook tasks；`--check` 才是把 Ansible check mode 傳入實際執行。Inventory／config inspector 可以幫你確認解析結果，但不是所有 task 當下變數與來源的完整證明。
 
 接著可看 [lazyansible 操作指南](lazyansible-guide.zh-TW.md)，或回到 [README](../README.md) 查快捷鍵、XDG 設定和 uv runtime 操作。

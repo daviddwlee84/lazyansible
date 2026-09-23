@@ -1,12 +1,37 @@
 # Workspace continuity and execution preview
 
-**Status:** P1 — proposed next round, captured 2026-09-23; implementation deferred
+**Status:** shipped (P1 workspace and Preview), 2026-09-23; debugger remains P? / L
 **Effort:** L
 **Related:** [TODO](../TODO.md), [variable provenance and graphs](variable-provenance-graphs.md), `internal/ui/app.go`, `internal/ui/run_review.go`, `internal/ansible/run.go`
 
 Interactive step/debug support is a separate **P? / L** investigation within this
-note. This round fixes the Help layout; the larger workspace and interactive
-debugging changes are deferred to a later implementation round.
+note. The workspace and read-only Preview implementation landed in the local source
+trial. Interactive debugging remains deferred.
+
+## Implementation record
+
+The implementation retains a Logs / Roles / Preview workspace and a shared
+playbook request. Tags use an explicit draft, merge local and native observations,
+and remember applied selections per playbook for the current session. `p` is an
+explicit refresh, not an automatic consequence of moving or applying tags.
+
+Roles defaults to direct declarations in the selected file, with repeated uses
+and unresolved imports/includes retained. `a` opens all project roles, `f` opens
+source selection and preview, and `s` suggests observed declaration tags. `r`
+reviews the current playbook. The standalone role action is named explicitly in
+Actions and does not inherit playbook tags or parent execution context.
+
+Native scope observation uses the same prepared command context for
+`--list-hosts --list-tasks --list-tags`. CLI equivalents are `preview PLAYBOOK`
+and `inspect tags PLAYBOOK`; structured rows retain native output as the fallback.
+The implementation does not provide complete variable provenance, a dependency
+graph, automatic chezmoi policy reconstruction, task stepping or debugger stdin.
+
+Parser/model tests cover source identity, repeated/unresolved role references,
+draft cancellation, stale observations, native request equivalence, source
+refresh and small-screen rendering. PTY verification uses disposable fake
+Ansible processes; the final implementation report records executed checks.
+The original rationale and debugger investigation are retained below.
 
 ## Why this surfaced
 
@@ -167,7 +192,7 @@ debug implementation is part of the P1 read-only preview slice.
   names, slow discovery, empty matches, Escape and return from overlays. Keep
   optional check/diff execution separate and test it only on a disposable fixture.
 
-**Decision, 2026-09-23:** record workspace continuity and read-only execution
-preview as the proposed P1/L next round. Keep step/partial-execution debugging
+**Original decision, 2026-09-23:** record workspace continuity and read-only execution
+preview as P1/L. Keep step/partial-execution debugging
 at P?/L until the terminal and execution-context spike is complete. No actual
 playbook was run during this investigation.

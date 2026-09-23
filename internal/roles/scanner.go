@@ -2,7 +2,9 @@
 package roles
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -27,17 +29,38 @@ type Role struct {
 	Defaults map[string]string // from defaults/main.yml
 	Handlers []string          // handler names from handlers/main.yml
 	Deps     []string          // role dependencies from meta/main.yml
+	Sources  []SourceFile      // existing main source files, in UI display order
+}
+
+type SourceFile struct {
+	Kind string
+	Path string
+	Line int // initial one-based source line; zero means start of file
 }
 
 // Scan finds all roles under rolesDir and parses their metadata.
 func Scan(rolesDir string) ([]*Role, error) {
+	return ScanContext(context.Background(), rolesDir)
+}
+
+// ScanContext performs all filesystem discovery outside the UI message loop.
+func ScanContext(ctx context.Context, rolesDir string) ([]*Role, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	entries, err := os.ReadDir(rolesDir)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, fmt.Errorf("read roles dir %s: %w", rolesDir, err)
 	}
 
 	var roles []*Role
 	for _, e := range entries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
@@ -60,11 +83,63 @@ func parseRole(path, name string) *Role {
 		Path:     path,
 		Defaults: make(map[string]string),
 	}
-	r.Tasks = parseTasks(filepath.Join(path, "tasks", "main.yml"))
-	r.Defaults = parseDefaults(filepath.Join(path, "defaults", "main.yml"))
-	r.Handlers = parseHandlerNames(filepath.Join(path, "handlers", "main.yml"))
-	r.Desc, r.Deps = parseMeta(filepath.Join(path, "meta", "main.yml"))
+	for _, kind := range []string{"tasks", "defaults", "vars", "handlers", "meta"} {
+		for _, name := range []string{"main.yml", "main.yaml"} {
+			p := filepath.Join(path, kind, name)
+			if info, err := os.Stat(p); err == nil && info.Mode().IsRegular() {
+				r.Sources = append(r.Sources, SourceFile{Kind: kind, Path: p})
+				break
+			}
+		}
+	}
+	for _, source := range r.Sources {
+		switch source.Kind {
+		case "tasks":
+			r.Tasks = parseTasks(source.Path)
+		case "defaults":
+			r.Defaults = parseDefaults(source.Path)
+		case "handlers":
+			r.Handlers = parseHandlerNames(source.Path)
+		case "meta":
+			r.Desc, r.Deps = parseMeta(source.Path)
+		}
+	}
 	return r
+}
+
+// ReadSource returns bounded local source text. It never follows includes or
+// evaluates variables, and callers run it as an asynchronous effect.
+func ReadSource(ctx context.Context, path string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("source is not a regular file: %s", path)
+	}
+	const limit = 1 << 20
+	if info.Size() > limit {
+		return "", fmt.Errorf("source exceeds 1 MiB preview limit: %s", path)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil {
+		return "", err
+	}
+	if len(data) > limit {
+		return "", fmt.Errorf("source exceeds 1 MiB preview limit: %s", path)
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	return string(data), nil
 }
 
 // parseTasks parses tasks/main.yml into a slice of Task.

@@ -12,7 +12,10 @@ import (
 	"github.com/daviddwlee84/lazyansible/internal/core"
 )
 
-type InspectInventoryMsg struct{ Host, Group string }
+type InspectInventoryMsg struct {
+	Host, Group string
+	FromRun     bool
+}
 type SetLimitMsg struct{ Limit string }
 
 // InventoryNode is a flattened row in the inventory tree.

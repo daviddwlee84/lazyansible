@@ -2,26 +2,36 @@ package ui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // TagsConfirmedMsg is sent when the user confirms tag selection.
-type TagsConfirmedMsg struct{ Tags string }
+type TagsConfirmedMsg struct {
+	Tags         string
+	ID, Revision uint64
+	Target       string
+}
 
 // TagsOverlay shows the available tags for a playbook with multi-select.
 type TagsOverlay struct {
-	allTags   []string // full list
-	visible   []string // filtered list
-	selected  map[string]bool
-	cursor    int
-	filter    textinput.Model
-	filtering bool
-	width     int
-	height    int
+	allTags               []string // full list
+	visible               []string // filtered list
+	selected              map[string]bool
+	cursor                int
+	filter                textinput.Model
+	filtering             bool
+	width                 int
+	height                int
+	id, revision          uint64
+	target, title, notice string
+	pending               bool
+	sources               map[string]string
 }
 
 func newTagsOverlay(width, height int) *TagsOverlay {
@@ -39,6 +49,10 @@ func newTagsOverlay(width, height int) *TagsOverlay {
 
 func (t *TagsOverlay) SetTags(tags []string) {
 	t.allTags = tags
+	t.sources = make(map[string]string)
+	for _, tag := range tags {
+		t.sources[tag] = "local YAML"
+	}
 	t.selected = make(map[string]bool)
 	t.filter.SetValue("")
 	t.filtering = false
@@ -78,6 +92,37 @@ func (t *TagsOverlay) SetSelectedTags(tags string) {
 	for _, tag := range strings.Split(tags, ",") {
 		if tag = strings.TrimSpace(tag); tag != "" {
 			t.selected[tag] = true
+		}
+	}
+	var missing []string
+	for tag := range t.selected {
+		if _, ok := t.sources[tag]; !ok {
+			missing = append(missing, tag)
+		}
+	}
+	sort.Strings(missing)
+	t.MergeTags(missing, "selected; not observed")
+}
+
+func (t *TagsOverlay) MergeTags(tags []string, source string) {
+	if t.sources == nil {
+		t.sources = map[string]string{}
+	}
+	selected := ""
+	if t.cursor >= 0 && t.cursor < len(t.visible) {
+		selected = t.visible[t.cursor]
+	}
+	for _, tag := range tags {
+		if _, ok := t.sources[tag]; !ok {
+			t.allTags = append(t.allTags, tag)
+		}
+		t.sources[tag] = source
+	}
+	t.applyFilter()
+	for i, tag := range t.visible {
+		if tag == selected {
+			t.cursor = i
+			break
 		}
 	}
 }
@@ -135,8 +180,9 @@ func (t *TagsOverlay) Update(msg tea.Msg) tea.Cmd {
 		t.cursor = max(0, len(t.visible)-1)
 	case "enter":
 		selected := t.SelectedTagsString()
+		id, revision, target := t.id, t.revision, t.target
 		return func() tea.Msg {
-			return TagsConfirmedMsg{Tags: selected}
+			return TagsConfirmedMsg{Tags: selected, ID: id, Revision: revision, Target: target}
 		}
 	case "j", "down":
 		if t.cursor < len(t.visible)-1 {
@@ -169,21 +215,26 @@ func (t *TagsOverlay) Update(msg tea.Msg) tea.Cmd {
 }
 
 func (t *TagsOverlay) View() string {
-	boxW := max(1, min(t.width-8, 60))
-	boxH := max(1, min(t.height-6, 28))
+	boxW := max(1, min(t.width, 76))
+	boxH := max(1, min(t.height, len(t.visible)+8))
 
 	var sb strings.Builder
-	sb.WriteString(overlayTitleStyle.Render("Tags Browser") + "\n")
+	sb.WriteString(overlayTitleStyle.Render(plainTerminalLine(firstNonempty(t.title, "Tags"))+" · draft") + "\n")
 
 	// Filter input.
-	sb.WriteString(overlayLabelStyle.Render("Filter: ") + t.filter.View() + "\n\n")
+	sb.WriteString(overlayLabelStyle.Render("Filter: ") + terminalInputView(t.filter) + "\n")
+	state := strings.Join(strings.Fields(plainTerminalLine(t.notice)), " ")
+	if t.pending {
+		state = "Discovering Ansible tags… (local choices available)"
+	}
+	sb.WriteString(ansi.Truncate(state, boxW, "…") + "\n")
 
 	if len(t.allTags) == 0 {
 		sb.WriteString(overlayMutedStyle.Render("  No tags found in this playbook.") + "\n")
 	} else if len(t.visible) == 0 {
 		sb.WriteString(overlayMutedStyle.Render("  No tags match the filter.") + "\n")
 	} else {
-		contentH := boxH - 9
+		contentH := boxH - 7
 		if contentH < 1 {
 			contentH = 1
 		}
@@ -202,7 +253,11 @@ func (t *TagsOverlay) View() string {
 			if t.selected[tag] {
 				check = lipgloss.NewStyle().Foreground(lipgloss.Color("#22C55E")).Render("✓ ")
 			}
-			line := fmt.Sprintf("%s%s", check, tag)
+			line := fmt.Sprintf("%s%s", check, plainTerminalLine(tag))
+			if t.sources[tag] == "selected; not observed" {
+				line += " (not observed)"
+			}
+			line = ansi.Truncate(line, boxW, "…")
 			if i == t.cursor {
 				sb.WriteString(overlaySelectedStyle.Render(line) + "\n")
 			} else {
@@ -213,19 +268,14 @@ func (t *TagsOverlay) View() string {
 
 	// Show current selection.
 	sel := t.SelectedTagsString()
-	if sel != "" {
-		sb.WriteString("\n" + overlayLabelStyle.Render("Selected: ") +
-			lipgloss.NewStyle().Foreground(lipgloss.Color("#22C55E")).Render(sel) + "\n")
-	}
+	sb.WriteString("\n" + overlayLabelStyle.Render("Selected: ") +
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#22C55E")).Render(plainTerminalLine(firstNonempty(sel, "No tag filter"))) + "\n")
 
-	hint := "[/] filter  [space] toggle  [a/A] all/none  [enter] confirm  [esc] back"
+	hint := "/ filter · Space toggle · a/A all/none\nEnter apply · Esc cancel"
 	if t.filtering {
 		hint = "Type to filter  [↑/↓] select  [enter/esc] return to list"
 	}
-	sb.WriteString("\n" + overlayHintStyle.Render(hint))
+	sb.WriteString(overlayLabelStyle.Render(hint))
 
-	return overlayBoxStyle.
-		Width(boxW).
-		Height(boxH).
-		Render(sb.String())
+	return fitScreen(sb.String(), boxW, boxH)
 }

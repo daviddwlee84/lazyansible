@@ -1,0 +1,11 @@
+
+playbook: site.yml
+
+  play #1 (local): Learn inventory, roles and tags	TAGS: []
+    pattern: ['local']
+    hosts (1):
+      localhost
+    tasks:
+      demo : Print the selected message	TAGS: [greeting]
+      Show the summary task	TAGS: [summary]
+      TASK TAGS: [greeting, summary]

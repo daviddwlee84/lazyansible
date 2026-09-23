@@ -125,7 +125,7 @@ func (p *StatusPanel) Update(msg tea.Msg) tea.Cmd {
 			p.cursor = max(0, len(p.results)-1)
 		case "enter":
 			if host := p.SelectedHost(); host != "" {
-				return func() tea.Msg { return InspectInventoryMsg{Host: host} }
+				return func() tea.Msg { return InspectInventoryMsg{Host: host, FromRun: true} }
 			}
 		}
 	}

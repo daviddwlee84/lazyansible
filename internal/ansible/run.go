@@ -148,30 +148,7 @@ func Prepare(ctx context.Context, request RunRequest) (RunPlan, error) {
 		return plan, fmt.Errorf("unknown run kind %q", request.Kind)
 	}
 	if request.Kind != "lint" {
-		if p.Inventory != "" {
-			args = append(args, "-i", p.Inventory)
-		}
-		if request.Limit != "" {
-			args = append(args, "--limit", request.Limit)
-		}
-		if request.Tags != "" && request.Kind != "adhoc" {
-			args = append(args, "--tags", request.Tags)
-		}
-		if request.Check {
-			args = append(args, "--check")
-		}
-		if request.Diff {
-			args = append(args, "--diff")
-		}
-		if request.Become {
-			args = append(args, "--become")
-		}
-		for _, value := range request.ExtraVars {
-			args = append(args, "-e", value)
-		}
-		if request.VaultPasswordFile != "" {
-			args = append(args, "--vault-password-file", request.VaultPasswordFile)
-		}
+		args = append(args, scopeArgs(request)...)
 		switch request.Kind {
 		case "syntax":
 			args = append(args, "--syntax-check")
@@ -181,6 +158,7 @@ func Prepare(ctx context.Context, request RunRequest) (RunPlan, error) {
 			args = append(args, "--list-hosts")
 		}
 	}
+
 	preferred := request.Executable
 	if preferred == "" {
 		preferred = p.Executable
@@ -207,4 +185,35 @@ func Prepare(ctx context.Context, request RunRequest) (RunPlan, error) {
 	}
 	plan.Preview = displayCommand(plan.Command)
 	return plan, nil
+}
+
+// scopeArgs is pure and shared by execution and read-only listing. Rebuilding
+// from the request avoids confusing a flag-looking extra-var value with a flag.
+func scopeArgs(request RunRequest) []string {
+	args := []string{}
+	if request.Project.Inventory != "" {
+		args = append(args, "-i", request.Project.Inventory)
+	}
+	if request.Limit != "" {
+		args = append(args, "--limit", request.Limit)
+	}
+	if request.Tags != "" && request.Kind != "adhoc" {
+		args = append(args, "--tags", request.Tags)
+	}
+	if request.Check {
+		args = append(args, "--check")
+	}
+	if request.Diff {
+		args = append(args, "--diff")
+	}
+	if request.Become {
+		args = append(args, "--become")
+	}
+	for _, value := range request.ExtraVars {
+		args = append(args, "-e", value)
+	}
+	if request.VaultPasswordFile != "" {
+		args = append(args, "--vault-password-file", request.VaultPasswordFile)
+	}
+	return args
 }

@@ -60,6 +60,45 @@ type Result struct {
 	Duration time.Duration `json:"duration"`
 }
 
+// Listing text is sanitized for terminal controls and recognized credentials;
+// arbitrary task names/output are not guaranteed safe to publish.
+type ExecutionPreview struct {
+	Request     RunRequest    `json:"request"`
+	Runtime     RuntimeStatus `json:"runtime"`
+	ObservedAt  time.Time     `json:"observed_at"`
+	Command     string        `json:"command"`
+	Output      string        `json:"output"`
+	Diagnostics string        `json:"diagnostics,omitempty"`
+	Notice      string        `json:"notice"`
+	Plays       []PreviewPlay `json:"plays"`
+	Parsed      bool          `json:"parsed"`
+	ExitCode    int           `json:"exit_code"`
+}
+type PreviewPlay struct {
+	Number  int           `json:"number"`
+	Name    string        `json:"name"`
+	Pattern string        `json:"pattern"`
+	Hosts   []string      `json:"hosts"`
+	Tasks   []PreviewTask `json:"tasks"`
+	Tags    []string      `json:"tags"`
+}
+type PreviewTask struct {
+	Name string   `json:"name"`
+	Tags []string `json:"tags"`
+}
+type TagCatalog struct {
+	Request     RunRequest    `json:"request"`
+	Runtime     RuntimeStatus `json:"runtime"`
+	ObservedAt  time.Time     `json:"observed_at"`
+	Command     string        `json:"command"`
+	Output      string        `json:"output"`
+	Diagnostics string        `json:"diagnostics,omitempty"`
+	Notice      string        `json:"notice"`
+	Tags        []string      `json:"tags"`
+	Parsed      bool          `json:"parsed"`
+	ExitCode    int           `json:"exit_code"`
+}
+
 type InventoryHost struct {
 	Name   string         `json:"name"`
 	Groups []string       `json:"groups"`

@@ -77,6 +77,14 @@ type App struct {
 	workbench             *workbenchModel
 	palette               *paletteModel
 	review                runReview
+	workspace             workspaceModel
+	draft                 executionDraft
+	executionPreview      executionPreviewModel
+	tagsSession           tagsSession
+	lastRunRequest        *ansible.RunRequest
+	logRequest            *ansible.RunRequest
+	observationJobs       int
+	historyJobs           int
 	reviewID              uint64
 	runtimeBusy           bool
 	runtimePending        bool
@@ -118,12 +126,11 @@ type App struct {
 	pbViewerOverlay *PlaybookViewerOverlay
 
 	// Run state.
-	inventory    *core.Inventory
-	playbooks    []*core.Playbook
-	running      bool
-	quitting     bool
-	statusMsg    string
-	extraVarsRaw string
+	inventory *core.Inventory
+	playbooks []*core.Playbook
+	running   bool
+	quitting  bool
+	statusMsg string
 
 	// v0.3 state.
 	vaultPassword     string          // current vault password (cleared after run)
@@ -165,6 +172,7 @@ func New(cfg Config) *App {
 
 	a.invPanel = panels.NewInventoryPanel(nil, 0, 0)
 	a.pbPanel = panels.NewPlaybooksPanel(nil, 0, 0)
+	a.pbPanel.BindOptions(&a.draft.options)
 	a.statusPanel = panels.NewStatusPanel(0, 0)
 	a.logsPanel = panels.NewLogsPanel(0, 0)
 
@@ -232,7 +240,15 @@ type errMsg struct {
 
 // ─── Update ──────────────────────────────────────────────────────────────────
 
-func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (a *App) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
+	a.syncExecutionDraft()
+	defer func() {
+		a.syncExecutionDraft()
+		a.syncPreviewWorkspaceLayout()
+		if a.mode == AppModeNormal && a.workspace.tab == workspaceRoles && a.rolesContextChanged() {
+			cmd = tea.Batch(cmd, a.refreshRolesWorkspace())
+		}
+	}()
 	if _, ok := msg.(ShutdownMsg); ok {
 		return a, a.requestQuit()
 	}
@@ -257,6 +273,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// Editor done: reload content and show status.
 	if ed, ok := msg.(editor.DoneMsg); ok {
+		a.invalidateExecution("Source changed")
+		a.rolesOverlay.Invalidate()
 		if ed.Err != nil {
 			a.statusMsg = "Editor error: " + ed.Err.Error()
 		} else {
@@ -274,6 +292,12 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	if cmd, handled := a.updateWorkbenchResult(msg); handled {
 		return a, cmd
+	}
+	if a.acceptRolesResult(msg) {
+		return a, nil
+	}
+	if a.acceptExecutionObservation(msg) {
+		return a, a.quitWhenIdle()
 	}
 
 	switch msg := msg.(type) {
@@ -296,6 +320,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		a.playbooks = msg.pbs
+		a.rolesOverlay.Invalidate()
 		a.pbPanel.SetPlaybooks(msg.pbs)
 		a.statusMsg = fmt.Sprintf("Found %d playbooks", len(msg.pbs))
 		if a.pendingProfile != nil {
@@ -321,7 +346,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case lintFinishedMsg:
 		a.linting = false
 		if a.quitting {
-			return a, tea.Quit
+			return a, a.quitWhenIdle()
 		}
 		if msg.exitCode == 0 {
 			a.statusMsg = "ansible-lint: no issues found ✓"
@@ -339,6 +364,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case panels.RunRequestMsg:
 		return a, a.startRun(msg)
+	case panels.ToggleOptionMsg:
+		if msg.Name == "check" {
+			a.toggleDraftCheck()
+		} else if msg.Name == "diff" {
+			a.toggleDraftDiff()
+		}
+		return a, nil
 
 	case EnvSwitchMsg:
 		a.mode = AppModeNormal
@@ -368,6 +400,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Host != "" {
 			target = "host:" + msg.Host
 		}
+		if msg.FromRun && a.lastRunRequest != nil {
+			return a, a.openRunHostInspector(target)
+		}
 		return a, a.openWorkbench("inventory", target)
 	case panels.SetLimitMsg:
 		a.pbPanel.SetLimit(msg.Limit)
@@ -386,15 +421,12 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case HistoryRunMsg:
 		return a, a.startRunFromHistory(msg.Record)
 	case ExtraVarsConfirmedMsg:
-		a.extraVarsRaw = msg.Raw
 		a.pbPanel.SetExtraVars(msg.Raw)
 		a.statusMsg = "Extra vars updated (values hidden)"
 		a.mode = AppModeNormal
 		return a, nil
 	case TagsConfirmedMsg:
-		a.pbPanel.SetActiveTags(msg.Tags)
-		a.statusMsg = "Tags updated"
-		a.mode = AppModeNormal
+		a.applyTags(msg)
 		return a, nil
 	case VaultPasswordMsg:
 		a.vaultPassword = msg.Password
@@ -412,6 +444,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.statusMsg = "Error: " + msg.err.Error()
 
 	case tea.KeyMsg:
+		if a.quitting {
+			return a, nil
+		}
 		if msg.String() == "ctrl+c" {
 			return a, a.requestQuit()
 		}
@@ -429,13 +464,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (a *App) updateLegacyKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// When the log panel's search bar is active, forward ALL key events to it
 	// so global shortcuts (q, V, etc.) don't fire during text input.
-	if (a.focused == core.PanelLogs && a.logsPanel.SearchActive()) ||
+	if a.workspaceInputActive() ||
 		(a.focused == core.PanelInventory && a.invPanel.FilterActive()) ||
 		(a.focused == core.PanelPlaybooks && a.pbPanel.FilterActive()) {
 		return a, a.delegateToPanel(msg)
 	}
 
-	if msg.String() == "N" && a.focused == core.PanelLogs {
+	if msg.String() == "N" && a.workspaceLogsActive() {
 		return a, a.delegateToPanel(msg)
 	}
 	if a.focused != core.PanelInventory && (msg.String() == "h" || msg.String() == "left" || msg.String() == "l" || msg.String() == "right") {
@@ -499,21 +534,14 @@ func (a *App) updateLegacyKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case "e":
-		if a.focused == core.PanelPlaybooks {
-			a.extraVarsOverlay.SetCurrent(a.extraVarsRaw)
+		if a.focused == core.PanelPlaybooks || a.workspaceFocused() {
+			a.extraVarsOverlay.SetCurrent(a.draft.options.ExtraVars)
 			a.mode = AppModeExtraVars
 			return a, nil
 		}
 
 	case "t":
-		if a.focused == core.PanelPlaybooks {
-			if pb := a.pbPanel.SelectedPlaybook(); pb != nil {
-				a.tagsOverlay.SetTags(pb.Tags)
-				a.tagsOverlay.SetSelectedTags(strings.Join(a.pbPanel.SelectedTags(), ","))
-				a.mode = AppModeTagsBrowser
-				return a, nil
-			}
-		}
+		return a, a.openTagsDraft(nil)
 
 	// ── v0.3 overlays ─────────────────────────────────────────────────────
 
@@ -541,12 +569,7 @@ func (a *App) updateLegacyKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// ── v0.4 overlays ─────────────────────────────────────────────────────
 
 	case "O":
-		// Role browser.
-		rolesDir := filepath.Join(a.config.WorkDir, "roles")
-		limit := a.pbPanel.CurrentLimit()
-		a.rolesOverlay.Load(rolesDir, a.config.InventoryPath, limit)
-		a.mode = AppModeRoles
-		return a, nil
+		return a, a.openRolesWorkspace()
 
 	case "N":
 		// Environment / inventory switcher.
@@ -572,6 +595,9 @@ func (a *App) updateLegacyKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return a, nil
 			}
 			a.linting = true
+			logRequest := a.selectedRequest()
+			logRequest.Kind = "lint"
+			a.logRequest = &logRequest
 			a.logsPanel.Clear()
 			a.statusMsg = fmt.Sprintf("Linting %s…", pb.Name)
 			ctx, cancel := context.WithCancel(a.ctx)
@@ -664,7 +690,7 @@ func (a *App) updateLegacyKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			pbName,
 			a.pbPanel.CurrentLimit(),
 			a.pbPanel.SelectedTags(),
-			a.extraVarsRaw,
+			a.draft.options.ExtraVars,
 			a.pbPanel.CheckMode(),
 			a.pbPanel.DiffMode(),
 			a.config.InventoryPath,
@@ -705,7 +731,11 @@ func (a *App) updateOverlay(msg tea.Msg) (tea.Model, tea.Cmd) {
 			consumed = a.sshProfileOverlay.HandleEscape()
 		}
 		if !consumed {
-			a.mode = AppModeNormal
+			if a.mode == AppModeTagsBrowser {
+				a.closeTagsDraft()
+			} else {
+				a.mode = AppModeNormal
+			}
 		}
 		return a, nil
 	}
@@ -746,6 +776,7 @@ func (a *App) delegateToPanel(msg tea.Msg) tea.Cmd {
 		old := a.pbPanel.SelectedPlaybook()
 		cmd := a.pbPanel.Update(msg)
 		selected := a.pbPanel.SelectedPlaybook()
+		a.playbookSelectionChanged(old, selected)
 		if a.pendingProfile == nil && selected != nil && (old == nil || old.Path != selected.Path) {
 			a.profileNeedsSelection = false
 		}
@@ -753,7 +784,7 @@ func (a *App) delegateToPanel(msg tea.Msg) tea.Cmd {
 	case core.PanelStatus:
 		return a.statusPanel.Update(msg)
 	case core.PanelLogs:
-		return a.logsPanel.Update(msg)
+		return a.updateWorkspace(msg)
 	}
 	return nil
 }
@@ -769,7 +800,7 @@ func (a *App) View() string {
 	case AppModeWorkbench:
 		return a.workbenchView()
 	case AppModeRunReview:
-		return a.reviewView()
+		return a.baseView()
 	case AppModePalette:
 		return a.paletteView()
 	case AppModeHelp:
@@ -779,13 +810,13 @@ func (a *App) View() string {
 	case AppModeExtraVars:
 		return a.renderOverlay(a.extraVarsOverlay.View())
 	case AppModeTagsBrowser:
-		return a.renderOverlay(a.tagsOverlay.View())
+		return a.baseView()
 	case AppModeVault:
 		return a.renderOverlay(a.vaultOverlay.View())
 	case AppModeHistory:
 		return a.renderOverlay(a.historyOverlay.View())
 	case AppModeRoles:
-		return a.renderOverlay(a.rolesOverlay.View())
+		return a.baseView()
 	case AppModeEnvSwitch:
 		return a.renderOverlay(a.envSwitchOverlay.View())
 	case AppModeSSHProfile:
@@ -801,64 +832,45 @@ func (a *App) View() string {
 	return a.baseView()
 }
 
-// topPanelHeight is the fixed row count reserved for the inventory/playbooks/status row.
-// Keeping this constant avoids any dynamic arithmetic that could introduce off-by-one
-// errors when log lines stream in. Adjust if you want more/less space at the top.
-const topPanelHeight = 14
-
 func (a *App) baseView() string {
-	if a.width < 100 || a.height < 22 {
-		header := fmt.Sprintf("lazyansible %s · %s", buildinfo.String(), a.runtimeSummary)
-		views := []string{a.invPanel.View(), a.pbPanel.View(), a.statusPanel.View(), a.logsPanel.View()}
-		titles := []string{"1 Inventory (static preview)", "2 Playbooks", "3 Status", "4 Logs"}
-		content := titles[int(a.focused)] + "\n" + views[int(a.focused)]
-		body := fitScreen(content, max(1, a.width), max(1, a.height-4))
-		state := a.statusMsg
-		if a.running {
-			state = "RUNNING · " + state
+	l := a.layout()
+	if l.header.height == 0 {
+		return ""
+	}
+	header := a.renderHeader()
+	if l.compact {
+		header = fmt.Sprintf("lazyansible %s · %s", buildinfo.String(), a.runtimeSummary)
+	}
+	parts := []string{fitWorkspace(header, l.header.width, l.header.height)}
+	if l.main.height > 0 {
+		if l.compact || a.workspace.zoom {
+			if l.workspaceVisible {
+				parts = append(parts, a.workspaceView())
+			} else {
+				parts = append(parts, a.compactPanelView(a.focused, l.main))
+			}
+		} else {
+			status := a.statusPanel.View()
+			if a.lastRunRequest != nil {
+				status = fitWorkspace(renderWorkspaceContext(*a.lastRunRequest, true), max(0, l.top[2].width-4), 2) + "\n" + status
+			}
+			views := []string{a.invPanel.View(), a.pbPanel.View(), status}
+			titles := []string{"Inventory (static)", "Playbooks", "Status"}
+			top := make([]string, 3)
+			for i, rect := range l.top {
+				view := a.wrapPanel(views[i], rect.width, rect.height, a.focused == core.Panel(i) && !a.workspaceModal(), titles[i])
+				top[i] = fitWorkspace(view, rect.width, rect.height)
+			}
+			parts = append(parts, lipgloss.JoinHorizontal(lipgloss.Top, top...), a.workspaceView())
 		}
-		if a.runtimeBusy {
-			state = "UPDATING ANSIBLE · " + state
-		}
-		return fitScreen(header+"\n"+body+"\n"+fitScreen(state, max(1, a.width), 1)+"\n"+a.renderStatusBar(), max(1, a.width), max(1, a.height))
 	}
-	// Layout: header(1) + topRow(topPanelHeight) + logsBox(rest) + statusBar(1) = a.height
-	available := a.height - 3 // header, feedback, and shortcuts
-	header := strings.TrimRight(a.renderHeader(), "\n")
-	statusBar := strings.TrimRight(a.renderStatusBar(), "\n")
-	feedback := fitScreen(a.statusMsg, max(1, a.width), 1)
-
-	var logsView string
-	if a.logsFullscreen {
-		logsView = strings.TrimRight(
-			a.wrapPanel(a.logsPanel.View(), a.width, available, true, "Logs"), "\n")
-		return fitScreen(forceHeight(header+"\n"+logsView+"\n"+feedback+"\n"+statusBar, a.height), a.width, a.height)
+	if l.feedback.height > 0 {
+		parts = append(parts, fitWorkspace(a.workspaceFeedback(), l.feedback.width, l.feedback.height))
 	}
-
-	// Top row gets a fixed height; logs get everything else.
-	topH := topPanelHeight
-	if topH > available-4 {
-		topH = available - 4 // guarantee at least 4 rows for logs
+	if l.footer.height > 0 {
+		parts = append(parts, fitWorkspace(a.renderStatusBar(), l.footer.width, l.footer.height))
 	}
-	botH := available - topH
-
-	invW := a.width / 4
-	pbW := a.width / 4
-	statusW := a.width - invW - pbW
-
-	invView := strings.TrimRight(
-		a.wrapPanel(a.invPanel.View(), invW, topH, a.focused == core.PanelInventory, "Inventory (static)"), "\n")
-	pbView := strings.TrimRight(
-		a.wrapPanel(a.pbPanel.View(), pbW, topH, a.focused == core.PanelPlaybooks, "Playbooks"), "\n")
-	statusView := strings.TrimRight(
-		a.wrapPanel(a.statusPanel.View(), statusW, topH, a.focused == core.PanelStatus, "Status"), "\n")
-	topRow := strings.TrimRight(
-		lipgloss.JoinHorizontal(lipgloss.Top, invView, pbView, statusView), "\n")
-	logsView = strings.TrimRight(
-		a.wrapPanel(a.logsPanel.View(), a.width, botH, a.focused == core.PanelLogs, "Logs"), "\n")
-
-	// Assemble and guarantee exactly a.height rows so alt-screen never scrolls.
-	return fitScreen(forceHeight(header+"\n"+topRow+"\n"+logsView+"\n"+feedback+"\n"+statusBar, a.height), a.width, a.height)
+	return fitWorkspace(strings.Join(parts, "\n"), a.width, a.height)
 }
 
 func (a *App) renderOverlay(content string) string {
@@ -1127,7 +1139,7 @@ func (a *App) renderHeader() string {
 		numPart := lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#475569")).
 			Render(t.num + " ")
-		if t.panel == a.focused {
+		if t.panel == a.focused && (t.panel != core.PanelLogs || a.workspace.tab == workspaceLogs) {
 			// Active tab: bright, underlined appearance
 			active := lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#06B6D4")).Bold(true).
@@ -1190,35 +1202,27 @@ type editorOpenPathMsg struct{ path string }
 
 // handleMouseClick focuses the panel that contains the clicked cell.
 func (a *App) handleMouseClick(x, y int) {
-	if a.mode != AppModeNormal || a.logsFullscreen {
+	if a.mode != AppModeNormal {
 		return
 	}
-	// Row 0 = header, rows 1..topH = top panels, rows topH+1.. = logs.
-	topH := topPanelHeight
-	if topH > a.height-6 {
-		topH = a.height - 6
-	}
-
-	if y == 0 || y >= a.height-1 {
-		return // header or statusbar
-	}
-
-	if y >= 1 && y <= topH {
-		// Top row: determine which column.
-		invW := a.width / 4
-		pbW := a.width / 4
-		switch {
-		case x < invW:
-			a.focused = core.PanelInventory
-		case x < invW+pbW:
-			a.focused = core.PanelPlaybooks
-		default:
-			a.focused = core.PanelStatus
+	l := a.layout()
+	for tab, rect := range l.tabs {
+		if rect.contains(x, y) {
+			a.openWorkspace(workspaceTab(tab))
+			return
 		}
-	} else {
-		a.focused = core.PanelLogs
 	}
-	a.updateFocus()
+	for panel, rect := range l.top {
+		if rect.contains(x, y) {
+			a.focused = core.Panel(panel)
+			a.updateFocus()
+			return
+		}
+	}
+	if l.workspaceVisible && l.workspace.contains(x, y) {
+		a.focused = core.PanelLogs
+		a.updateFocus()
+	}
 }
 
 func (a *App) cycleFocus(dir int) {
@@ -1240,54 +1244,55 @@ func (a *App) cycleFocus(dir int) {
 }
 
 func (a *App) updateFocus() {
+	wasZoomed := a.workspace.zoom
+	if a.focused != core.PanelLogs {
+		a.workspace.zoom = false
+	}
 	a.invPanel.SetFocused(a.focused == core.PanelInventory)
 	a.pbPanel.SetFocused(a.focused == core.PanelPlaybooks)
 	a.statusPanel.SetFocused(a.focused == core.PanelStatus)
-	a.logsPanel.SetFocused(a.focused == core.PanelLogs)
+	a.logsPanel.SetFocused(a.workspaceLogsActive())
+	if wasZoomed != a.workspace.zoom {
+		a.resizePanels()
+	}
 }
 
 func (a *App) resizePanels() {
 	if a.workbench != nil {
 		a.syncWorkbenchLayout()
 	}
-	a.review.viewport.Width = max(1, a.width-2)
-	a.review.viewport.Height = max(1, a.height-7)
-	a.reflowReview()
-
-	available := a.height - 3
-	invW := a.width / 4
-	pbW := a.width / 4
-	statusW := a.width - invW - pbW
-
-	if a.logsFullscreen {
-		a.invPanel.SetSize(invW-4, 1)
-		a.pbPanel.SetSize(pbW-4, 1)
-		a.statusPanel.SetSize(statusW-4, 1)
-		a.logsPanel.SetSize(a.width-4, available-2)
+	l := a.layout()
+	if l.compact || a.workspace.zoom {
+		w, h := max(0, l.main.width), max(0, l.main.height-3)
+		a.invPanel.SetSize(w, h)
+		a.pbPanel.SetSize(w, h)
+		a.statusPanel.SetSize(w, h)
 	} else {
-		topH := topPanelHeight
-		if topH > available-4 {
-			topH = available - 4
+		a.invPanel.SetSize(max(0, l.top[0].width-4), max(0, l.top[0].height-2))
+		a.pbPanel.SetSize(max(0, l.top[1].width-4), max(0, l.top[1].height-2))
+		statusHeader := 0
+		if a.lastRunRequest != nil {
+			statusHeader = 2
 		}
-		botH := available - topH
-		a.invPanel.SetSize(invW-4, topH-2)
-		a.pbPanel.SetSize(pbW-4, topH-2)
-		a.statusPanel.SetSize(statusW-4, topH-2)
-		a.logsPanel.SetSize(a.width-4, botH-2)
+		a.statusPanel.SetSize(max(0, l.top[2].width-4), max(0, l.top[2].height-2-statusHeader))
 	}
+	w, h := a.workspaceBodySize()
+	a.logsPanel.SetSize(w, h)
+	a.syncReviewLayout()
+	a.syncPreviewWorkspaceLayout()
 
 	a.adhocOverlay.width = a.width
 	a.adhocOverlay.height = a.height
 	a.extraVarsOverlay.width = a.width
 	a.extraVarsOverlay.height = a.height
-	a.tagsOverlay.width = a.width
-	a.tagsOverlay.height = a.height
+	a.tagsOverlay.width = w
+	a.tagsOverlay.height = h
 	a.vaultOverlay.width = a.width
 	a.vaultOverlay.height = a.height
 	a.historyOverlay.width = a.width
 	a.historyOverlay.height = a.height
-	a.rolesOverlay.width = a.width
-	a.rolesOverlay.height = a.height
+	a.rolesOverlay.width = w
+	a.rolesOverlay.height = h
 	a.envSwitchOverlay.width = a.width
 	a.envSwitchOverlay.height = a.height
 	a.sshProfileOverlay.width = a.width
@@ -1298,13 +1303,6 @@ func (a *App) resizePanels() {
 	a.runProfilesOverlay.height = a.height
 	a.pbViewerOverlay.width = a.width
 	a.pbViewerOverlay.height = a.height
-	if a.width < 100 || a.height < 22 {
-		w, h := max(1, a.width), max(1, a.height-5)
-		a.invPanel.SetSize(w, h)
-		a.pbPanel.SetSize(w, h)
-		a.statusPanel.SetSize(w, h)
-		a.logsPanel.SetSize(w, h)
-	}
 }
 
 // ─── Run lifecycle ────────────────────────────────────────────────────────────
@@ -1329,6 +1327,7 @@ func (a *App) handleRunFinished(msg runner.RunFinishedMsg) tea.Cmd {
 		a.runRecord.ExitCode = msg.ExitCode
 		a.runRecord.HostStats = a.statusPanel.HostStatsMap()
 		record := *a.runRecord
+		a.historyJobs++
 		finishCmds = append(finishCmds, func() tea.Msg { return historySavedMsg{err: history.Save(&record)} })
 		a.runRecord = nil
 	}
@@ -1344,13 +1343,17 @@ func (a *App) handleRunFinished(msg runner.RunFinishedMsg) tea.Cmd {
 		}
 		a.statusMsg = fmt.Sprintf("Exit code %d%s", msg.ExitCode, failStr)
 	}
+	level := core.LogLevelOK
+	if msg.Err != nil || msg.ExitCode != 0 {
+		level = core.LogLevelFailed
+	}
+	a.logsPanel.AddLine(core.LogLine{Text: a.statusMsg, Level: level, Timestamp: time.Now()})
 
 	// Desktop notification.
 	if a.notifyOnFinish {
-		pbName := a.pbPanel.SelectedPlaybook()
 		name := "playbook"
-		if pbName != nil {
-			name = pbName.Name
+		if a.lastRunRequest != nil {
+			name = filepath.Base(firstNonempty(a.lastRunRequest.Playbook, a.lastRunRequest.RolePath, a.lastRunRequest.Module))
 		}
 		dur := ""
 		if msg.Duration > 0 {
@@ -1365,14 +1368,7 @@ func (a *App) handleRunFinished(msg runner.RunFinishedMsg) tea.Cmd {
 	}
 
 	if a.quitting {
-		return func() tea.Msg {
-			for _, cmd := range finishCmds {
-				if cmd != nil {
-					cmd()
-				}
-			}
-			return tea.Quit()
-		}
+		finishCmds = append(finishCmds, a.quitWhenIdle())
 	}
 	return tea.Batch(finishCmds...)
 }
@@ -1385,6 +1381,8 @@ func (a *App) switchInventory(path string) tea.Cmd {
 }
 
 func (a *App) reloadProject() tea.Cmd {
+	a.invalidateExecution("Project refreshed")
+	a.rolesOverlay.Invalidate()
 	a.config.generation++
 	a.config.Runtime.WorkDir = a.config.WorkDir
 	galaxy.SetContext(a.projectContext(), a.config.Runtime)
@@ -1514,6 +1512,8 @@ func (a *App) applyRunProfile(p runprofiles.Profile) tea.Cmd {
 		a.statusMsg = "Wait for the active run before changing profiles"
 		return nil
 	}
+	a.syncExecutionDraft()
+	a.draft.keepTagsOnce = true
 	if p.WorkDir != "" {
 		a.config.WorkDir = p.WorkDir
 	}
@@ -1523,7 +1523,6 @@ func (a *App) applyRunProfile(p runprofiles.Profile) tea.Cmd {
 	a.config.InventoryPath = p.Inventory
 	a.pbPanel.SetLimit(p.Limit)
 	a.pbPanel.SetActiveTags(strings.Join(p.Tags, ","))
-	a.extraVarsRaw = p.ExtraVars
 	a.pbPanel.SetExtraVars(p.ExtraVars)
 	a.pbPanel.SetCheckMode(p.CheckMode)
 	a.pbPanel.SetDiffMode(p.DiffMode)
@@ -1537,6 +1536,8 @@ func (a *App) selectProfilePlaybook(p runprofiles.Profile) {
 		return
 	}
 	if a.pbPanel.SelectByPath(p.Playbook) || a.pbPanel.SelectByNameUnique(p.Playbook) {
+		a.draft.keepTagsOnce = true
+		a.pbPanel.SetActiveTags(strings.Join(p.Tags, ","))
 		a.profileNeedsSelection = false
 		a.statusMsg = "Profile loaded: " + p.Name
 	} else {
@@ -1548,11 +1549,18 @@ func (a *App) selectProfilePlaybook(p runprofiles.Profile) {
 // Keep the UI alive until the owned child reports it has stopped and reaped.
 func (a *App) requestQuit() tea.Cmd {
 	a.Close()
-	if a.running || a.linting || a.runtimeBusy {
-		a.quitting = true
+	a.quitting = true
+	if a.running || a.linting || a.runtimeBusy || a.observationJobs > 0 || a.historyJobs > 0 {
 		a.mode = AppModeNormal
 		a.statusMsg = "Cancelling active operation before exit…"
 		return nil
 	}
 	return tea.Quit
+}
+
+func (a *App) quitWhenIdle() tea.Cmd {
+	if a.quitting && !a.running && !a.linting && !a.runtimeBusy && a.observationJobs == 0 && a.historyJobs == 0 {
+		return tea.Quit
+	}
+	return nil
 }

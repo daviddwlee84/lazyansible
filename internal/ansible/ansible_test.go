@@ -121,6 +121,21 @@ func fakeCommand(name string) int {
 		fmt.Println(`[{"name":"DEFAULT_STDOUT_CALLBACK","value":"clean","origin":"project/ansible.cfg","type":"string"}]`)
 		return 0
 	}
+	if name == "ansible-playbook" && (contains("--list-tasks") || contains("--list-hosts") || contains("--list-tags")) {
+		if os.Getenv("LAZYANSIBLE_LISTING_SLEEP") != "" {
+			time.Sleep(time.Minute)
+		}
+		if os.Getenv("LAZYANSIBLE_LISTING_OVERSIZE") != "" {
+			fmt.Print(strings.Repeat("x", maxProbeOutput+1))
+			return 0
+		}
+		fmt.Print(os.Getenv("LAZYANSIBLE_LISTING_OUTPUT"))
+		fmt.Fprint(os.Stderr, os.Getenv("LAZYANSIBLE_LISTING_DIAGNOSTIC"))
+		if os.Getenv("LAZYANSIBLE_LISTING_FAILED") != "" {
+			return 7
+		}
+		return 0
+	}
 	if os.Getenv("LAZYANSIBLE_SLEEP") != "" {
 		fmt.Println("ready")
 		time.Sleep(time.Minute)

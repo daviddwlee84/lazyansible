@@ -20,7 +20,15 @@ type RunRequestMsg struct {
 
 type ViewPlaybookMsg struct{ Playbook *core.Playbook }
 
-// PlaybooksPanel lists discovered playbooks and tracks run options.
+// ExecutionOptions is owned by the application and shared with the panel for display.
+// Standalone panel users receive a private instance until BindOptions is called.
+type ExecutionOptions struct {
+	Check, Diff            bool
+	Tags, Limit, ExtraVars string
+}
+type ToggleOptionMsg struct{ Name string }
+
+// PlaybooksPanel lists discovered playbooks and displays the application draft.
 type PlaybooksPanel struct {
 	playbooks    []*core.Playbook
 	allPlaybooks []*core.Playbook
@@ -30,16 +38,14 @@ type PlaybooksPanel struct {
 	height       int
 	filter       listFilter
 
-	checkMode    bool
-	diffMode     bool
-	activeTags   string // set via tags overlay
-	limit        string // set from inventory panel
-	extraVarsRaw string // set via extra-vars overlay
+	options *ExecutionOptions
 }
 
 func NewPlaybooksPanel(playbooks []*core.Playbook, width, height int) *PlaybooksPanel {
-	return &PlaybooksPanel{playbooks: playbooks, allPlaybooks: playbooks, width: width, height: height, filter: newListFilter()}
+	return &PlaybooksPanel{playbooks: playbooks, allPlaybooks: playbooks, width: width, height: height, filter: newListFilter(), options: &ExecutionOptions{}}
 }
+
+func (p *PlaybooksPanel) BindOptions(options *ExecutionOptions) { p.options = options }
 
 func (p *PlaybooksPanel) SetSize(w, h int)   { p.width = w; p.height = h }
 func (p *PlaybooksPanel) SetFocused(f bool)  { p.focused = f }
@@ -68,22 +74,22 @@ func (p *PlaybooksPanel) applyFilter() {
 	}
 	p.cursor = clampCursor(p.cursor, len(p.playbooks))
 }
-func (p *PlaybooksPanel) SetLimit(limit string)     { p.limit = limit }
-func (p *PlaybooksPanel) SetActiveTags(tags string) { p.activeTags = tags }
-func (p *PlaybooksPanel) SetExtraVars(raw string)   { p.extraVarsRaw = raw }
-func (p *PlaybooksPanel) SetCheckMode(v bool)       { p.checkMode = v }
-func (p *PlaybooksPanel) SetDiffMode(v bool)        { p.diffMode = v }
-func (p *PlaybooksPanel) CurrentLimit() string      { return p.limit }
-func (p *PlaybooksPanel) CheckMode() bool           { return p.checkMode }
-func (p *PlaybooksPanel) DiffMode() bool            { return p.diffMode }
+func (p *PlaybooksPanel) SetLimit(limit string)     { p.options.Limit = limit }
+func (p *PlaybooksPanel) SetActiveTags(tags string) { p.options.Tags = tags }
+func (p *PlaybooksPanel) SetExtraVars(raw string)   { p.options.ExtraVars = raw }
+func (p *PlaybooksPanel) SetCheckMode(v bool)       { p.options.Check = v }
+func (p *PlaybooksPanel) SetDiffMode(v bool)        { p.options.Diff = v }
+func (p *PlaybooksPanel) CurrentLimit() string      { return p.options.Limit }
+func (p *PlaybooksPanel) CheckMode() bool           { return p.options.Check }
+func (p *PlaybooksPanel) DiffMode() bool            { return p.options.Diff }
 
 // SelectedTags returns the active tags as a slice (split by comma).
 func (p *PlaybooksPanel) SelectedTags() []string {
-	if p.activeTags == "" {
+	if p.options.Tags == "" {
 		return nil
 	}
 	var tags []string
-	for _, t := range strings.Split(p.activeTags, ",") {
+	for _, t := range strings.Split(p.options.Tags, ",") {
 		if s := strings.TrimSpace(t); s != "" {
 			tags = append(tags, s)
 		}
@@ -182,16 +188,16 @@ func (p *PlaybooksPanel) Update(msg tea.Msg) tea.Cmd {
 			p.cursor = len(p.playbooks) - 1
 		}
 	case "c":
-		p.checkMode = !p.checkMode
+		return func() tea.Msg { return ToggleOptionMsg{Name: "check"} }
 	case "d":
-		p.diffMode = !p.diffMode
+		return func() tea.Msg { return ToggleOptionMsg{Name: "diff"} }
 	case "enter", " ":
 		if pb := p.SelectedPlaybook(); pb != nil {
 			return func() tea.Msg { return ViewPlaybookMsg{Playbook: pb} }
 		}
 	case "r":
 		if pb := p.SelectedPlaybook(); pb != nil {
-			request := RunRequestMsg{Playbook: pb, Limit: p.limit, Check: p.checkMode, Diff: p.diffMode, Tags: p.activeTags}
+			request := RunRequestMsg{Playbook: pb, Limit: p.options.Limit, Check: p.options.Check, Diff: p.options.Diff, Tags: p.options.Tags}
 			return func() tea.Msg {
 				return request
 			}
@@ -214,20 +220,20 @@ func (p *PlaybooksPanel) View() string {
 
 	// ── Active option badges ───────────────────────────────────────────────
 	var badges []string
-	if p.checkMode {
+	if p.options.Check {
 		badges = append(badges, flagStyle.Render("✓check"))
 	}
-	if p.diffMode {
+	if p.options.Diff {
 		badges = append(badges, flagStyle.Render("±diff"))
 	}
-	if p.limit != "" {
-		badges = append(badges, limitStyle.Render("⊢ "+truncateBadge(p.limit, 14)))
+	if p.options.Limit != "" {
+		badges = append(badges, limitStyle.Render("⊢ "+truncateBadge(p.options.Limit, 14)))
 	}
-	if p.activeTags != "" {
-		badges = append(badges, tagsStyle.Render("# "+truncateBadge(p.activeTags, 14)))
+	if p.options.Tags != "" {
+		badges = append(badges, tagsStyle.Render("# "+truncateBadge(p.options.Tags, 14)))
 	}
-	if p.extraVarsRaw != "" {
-		badges = append(badges, extraVarsStyle.Render("-e "+truncateBadge(p.extraVarsRaw, 12)))
+	if p.options.ExtraVars != "" {
+		badges = append(badges, extraVarsStyle.Render("-e values hidden"))
 	}
 	if len(badges) > 0 {
 		sb.WriteString(strings.Join(badges, " ") + "\n")

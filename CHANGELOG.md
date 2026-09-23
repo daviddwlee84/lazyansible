@@ -9,6 +9,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- Persistent Logs / Roles / Preview workspace with shared execution context, tab navigation, zoom, contextual Help, and reviewed execution results.
+- Explicit native hosts/tasks/tags preview through `p` and `preview PLAYBOOK`, plus `inspect tags PLAYBOOK`; observations retain raw output and distinguish stale, unavailable, failed, and empty results.
+- Playbook-bound tag drafts with background Ansible discovery, cancel/apply semantics, and per-playbook session selections.
+- Related role declarations with play/source/tag context, repeated and unresolved references, project-role browsing, and asynchronous source previews.
 - XDG preferences/profiles, private history state, update cache, legacy read fallback, and effective config commands.
 - Arrow/Vim navigation, searchable action palette, inventory/config inspectors, and reviewed playbook/ad-hoc/role execution through shared CLI/TUI services.
 - Shared uv Ansible ownership/status, cached update observations, and explicit targeted install/upgrade commands.
@@ -16,6 +20,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Isolated fixtures, real PTY smoke coverage, agent guidance, and a structured future-work index.
 
 ### Changed
+- `r` in Roles reviews the current playbook. Standalone role execution is an explicit Actions entry with separate context and no inherited playbook tags; declared tags are suggestions applied through the normal picker.
 - This checkout is the `daviddwlee84/lazyansible` personal fork. Source trial/rebuild replaces inherited upstream package-channel recommendations.
 - macOS uses XDG paths. Explicit false flags override preferences. Config initialization never overwrites an existing file.
 - Managed executions use the default stdout callback only for the child process; the project's `ansible.cfg` is unchanged.
@@ -23,6 +28,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - CI reads its Go version from go.mod. Release automation is manual snapshot building only; upstream tap, Scoop, and AUR publishing targets are removed.
 
 ### Fixed
+- Native observations enforce their output cap and finish child/Vault cleanup before dashboard shutdown.
+- Profile loading and playbook changes preserve each playbook's tags; late previews cannot replace a newer scope or runtime observation.
 - Auto-discovered inventory path is now stored and passed to Ansible as **`-i`** (runs from the TUI no longer omit the inventory file)
 - Discovery order prefers **`inventory`** and **`hosts`** (no extension) before `*.yml` / `*.yaml`, matching common project layouts
 

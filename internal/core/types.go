@@ -43,6 +43,24 @@ type Playbook struct {
 	Hosts []string
 	// Tags collected from all plays and tasks.
 	Tags []string
+	// RoleDeclarations preserves source order, repeated declarations, and
+	// unresolved import/include references in this file. It is not a run graph.
+	RoleDeclarations []RoleDeclaration
+}
+
+// RoleDeclaration describes a directly observed YAML declaration. Static means
+// a literal name in roles:, not that the role will execute or can be resolved.
+type RoleDeclaration struct {
+	ID         string
+	Name       string
+	Kind       string
+	PlayName   string
+	SourcePath string
+	PlayIndex  int // one-based play number in this file; zero for top-level imports
+	Line       int // one-based source line
+	Tags       []string
+	Static     bool
+	Reason     string
 }
 
 // RunOptions holds the parameters for a playbook run.

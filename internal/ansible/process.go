@@ -21,16 +21,19 @@ import (
 const maxProbeOutput = 4 << 20
 
 type boundedBuffer struct {
-	bytes.Buffer
-	max int
+	buffer bytes.Buffer
+	max    int
 }
 
 func (b *boundedBuffer) Write(p []byte) (int, error) {
-	if b.Len()+len(p) > b.max {
+	if b.buffer.Len()+len(p) > b.max {
 		return 0, fmt.Errorf("command output exceeded %d bytes", b.max)
 	}
-	return b.Buffer.Write(p)
+	return b.buffer.Write(p)
 }
+
+func (b *boundedBuffer) Bytes() []byte  { return b.buffer.Bytes() }
+func (b *boundedBuffer) String() string { return b.buffer.String() }
 
 func mergeEnv(extra []string) []string {
 	env := append([]string{}, os.Environ()...)
