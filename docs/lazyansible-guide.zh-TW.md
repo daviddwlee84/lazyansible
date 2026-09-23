@@ -1,6 +1,6 @@
 # lazyansible 操作指南：從瀏覽到執行
 
-lazyansible 可以執行 playbook、role 和 ad-hoc module。**`Enter` 是查看，`r` 才是準備執行**；在執行確認畫面，預設選中 **Cancel**，按 `Tab` 選 **Run**，再按 `Enter` 才會啟動 Ansible。
+lazyansible 可以執行 playbook、role 和 ad-hoc module。**主畫面的 `Enter` 是查看，`r` 才是準備執行**；在執行確認畫面，預設選中 **Cancel**，按 `Tab` 選 **Run**，再按 `Enter` 才會啟動 Ansible。
 
 如果現在只看到 YAML，表示你在 playbook 原始碼檢視器。按 `Esc` 回主畫面後，可以按大寫 **`O`** 開啟 Role Browser，或按 **`2` → `t`** 開啟目前 playbook 的 Tags Browser。
 
@@ -38,7 +38,9 @@ lazyansible 可以執行 playbook、role 和 ad-hoc module。**`Enter` 是查看
 1. 在主畫面按大寫 `O`；也可先按 `:`，輸入 `role`，選 **Role browser**，按 `Enter`。
 2. 左側用 `j/k` 選 role；`/` 可依 role 名稱篩選。輸入後按 `Enter` 回到清單操作。
 3. `Enter`、`l` 或 `→` 把焦點移到右側；`j/k` 捲動內容。`h` 或 `←` 回左側；`Tab` 也可切換兩側。
-4. `r` 準備執行整個所選 role，進入同一個執行確認畫面。若只想看，按 `Esc` 返回即可。
+4. `r` 準備執行整個所選 role，進入同一個執行確認畫面。若只想看，逐層按 `Esc` 返回即可。
+
+`Esc` 會先結束篩選輸入，再清除保留的篩選文字；從右側摘要返回左側清單後，再按一次才關閉 Role Browser。因此有篩選或在右側時，回到主畫面可能需要多按幾次。
 
 目前左側掃描的是 **`<工作目錄>/roles/` 下的直接子目錄**。右側把 role 的 `tasks/main.yml`、`defaults/main.yml`、`handlers/main.yml`、`meta/main.yml` 整理成 Tasks、Defaults、Handlers、Dependencies 摘要。
 
@@ -236,3 +238,5 @@ lazyansible runtime upgrade --dry-run
 ```
 
 更多設定、XDG 路徑與版本管理方式見 [README](../README.md)。完整流程圖、`when` 分支與變數來源追蹤仍列在 [後續評估](../backlog/variable-provenance-graphs.md)，目前的 YAML／role 摘要不表示這些能力已實作。
+
+Tag／Role／Run 畫面如何保留操作上下文，以及執行步驟預覽、單步／局部執行的後續設計，另見 [下一輪工作台與執行預覽](../backlog/workspace-execution-ux.md)。這些是待實作與研究項目，目前沒有新增單步除錯按鈕。

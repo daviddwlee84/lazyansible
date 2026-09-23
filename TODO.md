@@ -6,7 +6,7 @@ documented in [README.md](README.md), not this index.
 
 ## P1
 
-No deferred item selected for the next batch yet; first evaluate the local trial.
+- [ ] **[L] Keep tag, role and execution views in one workspace** — Preserve selected project/playbook context, make tag application and role actions explicit, and add task/host/tag previews before a styled shared run review and result. → [research](backlog/workspace-execution-ux.md)
 
 ## P2
 
@@ -19,6 +19,7 @@ No additional deferred work selected.
 ## P?
 
 - [ ] **[?/L] Evaluate variable provenance and dependency graphs** — Separate observable inventory/config origins from execution-dependent precedence before choosing a graph UI. → [research](backlog/variable-provenance-graphs.md)
+- [ ] **[?/L] Evaluate partial execution and interactive task debugging** — Compare native step/start-at-task and failure-debugger handoff against an embedded session; establish context, cancellation and terminal-ownership limits before implementation. → [research](backlog/workspace-execution-ux.md#interactive-step-debugging)
 
 ## Done
 

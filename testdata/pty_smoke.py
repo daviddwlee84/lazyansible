@@ -120,7 +120,13 @@ else:
             while not marker.exists() and time.monotonic() < deadline:
                 read_for(0.1)
             assert marker.exists(), "approved run did not execute"
+            help_start = len(output)
             send(b"?")
+            wait_text("Keyboard shortcuts", since=help_start)
+            wait_text("Enter / Space", since=help_start)
+            send(b"G")
+            wait_text("Text fields own printable keys", since=help_start)
+            send(b"g")
             read_for(1.5)
             send(b"\x1b")
             # A second completed run proves the overlay did not swallow RunFinished.

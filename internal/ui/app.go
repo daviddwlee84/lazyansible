@@ -711,21 +711,7 @@ func (a *App) updateOverlay(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	switch a.mode {
 	case AppModeHelp:
-		if key, ok := msg.(tea.KeyMsg); ok {
-			switch key.String() {
-			case "j", "down":
-				a.helpOffset++
-			case "k", "up":
-				a.helpOffset = max(0, a.helpOffset-1)
-			case "g", "home":
-				a.helpOffset = 0
-			case "G", "end":
-				a.helpOffset = len(a.actions())
-			case "q":
-				a.mode = AppModeNormal
-			}
-		}
-		return a, nil
+		return a, a.updateHelp(msg)
 	case AppModeAdHoc:
 		return a, a.adhocOverlay.Update(msg)
 	case AppModeExtraVars:

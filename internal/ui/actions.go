@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/daviddwlee84/lazyansible/internal/core"
 )
@@ -196,21 +197,164 @@ func (a *App) actionFooter() string {
 	maxMsg := a.width - len(hint) - 3
 	return ansi.Truncate(a.statusMsg, max(0, maxMsg), "…") + " | " + hint
 }
-func (a *App) actionsHelp() string {
-	rows := []string{}
+
+// helpGroup changes presentation order only; dispatch and availability continue
+// to come from the same action registry used by the dashboard and palette.
+func helpGroup(v action) int {
+	switch v.id {
+	case "down", "up", "top", "bottom", "focus-next", "focus-prev",
+		"inventory-panel", "playbooks-panel", "status-panel", "logs-panel":
+		return 1
+	case "tags", "extra-vars", "lint", "edit", "fullscreen", "export", "clear-logs":
+		return 0
+	}
+	if v.kind == "panel" {
+		return 0
+	}
+	return 2
+}
+
+func helpKeys(keys []string) string {
+	names := make([]string, len(keys))
+	for i, key := range keys {
+		switch key {
+		case " ":
+			names[i] = "Space"
+		case "enter":
+			names[i] = "Enter"
+		case "tab":
+			names[i] = "Tab"
+		case "shift+tab":
+			names[i] = "Shift+Tab"
+		case "home":
+			names[i] = "Home"
+		case "end":
+			names[i] = "End"
+		case "up":
+			names[i] = "↑"
+		case "down":
+			names[i] = "↓"
+		case "left":
+			names[i] = "←"
+		case "right":
+			names[i] = "→"
+		default:
+			names[i] = strings.Replace(key, "ctrl+", "Ctrl+", 1)
+		}
+	}
+	return strings.Join(names, " / ")
+}
+
+func (a *App) helpRows(width int) []string {
+	var groups [3][]action
 	for _, v := range a.actions() {
-		if len(v.keys) == 0 {
+		if len(v.keys) != 0 {
+			groups[helpGroup(v)] = append(groups[helpGroup(v)], v)
+		}
+	}
+	panelNames := []string{"Inventory", "Playbooks", "Status", "Logs"}
+	titles := []string{panelNames[int(a.focused)] + " · current panel", "Navigation", "Global actions"}
+	sectionStyle := lipgloss.NewStyle().Foreground(colorBorderFocus).Bold(true)
+	var rows []string
+	for i, group := range groups {
+		if len(group) == 0 {
 			continue
 		}
-		suffix := ""
-		if !v.enabled {
-			suffix = " (unavailable)"
+		if len(rows) > 0 {
+			rows = append(rows, "")
 		}
-		rows = append(rows, fmt.Sprintf("%-16s %s%s", strings.Join(v.keys, "/"), v.label, suffix))
+		rows = append(rows, sectionStyle.Render(ansi.Truncate(titles[i], width, "…")))
+		for _, v := range group {
+			label := v.label
+			keyStyle, descriptionStyle := overlayActiveInputStyle, overlayItemStyle
+			if !v.enabled {
+				label += " (unavailable)"
+				keyStyle, descriptionStyle = overlayLabelStyle, overlayMutedStyle
+			}
+			keys := helpKeys(v.keys)
+			if width < 44 {
+				for _, line := range strings.Split(ansi.Wrap(keys, width, ""), "\n") {
+					rows = append(rows, keyStyle.Render(line))
+				}
+				indent := strings.Repeat(" ", min(2, max(0, width-1)))
+				for _, line := range strings.Split(ansi.Wrap(label, max(1, width-len(indent)), ""), "\n") {
+					rows = append(rows, indent+descriptionStyle.Render(line))
+				}
+				continue
+			}
+			const keyWidth = 16
+			for j, line := range strings.Split(ansi.Wrap(label, width-keyWidth-2, ""), "\n") {
+				key := ""
+				if j == 0 {
+					key = keys
+				}
+				keyColumn := keyStyle.Render(key) + strings.Repeat(" ", max(0, keyWidth-lipgloss.Width(key)))
+				rows = append(rows, keyColumn+"  "+descriptionStyle.Render(line))
+			}
+		}
 	}
-	rows = append(rows, ": opens searchable actions, Inspector and Runtime.", "Text fields own printable keys. Ctrl+C exits.")
-	height := max(1, a.height-5)
-	start := min(a.helpOffset, max(0, len(rows)-height))
-	end := min(len(rows), start+height)
-	return fitScreen("lazyansible — current actions\n\n"+strings.Join(rows[start:end], "\n")+"\n\nj/k scroll · g/G ends · Esc back", max(1, a.width-4), max(1, a.height-2))
+	rows = append(rows, "")
+	for _, line := range strings.Split(ansi.Wrap("Text fields own printable keys. Ctrl+C exits.", width, ""), "\n") {
+		rows = append(rows, overlayLabelStyle.Render(line))
+	}
+	return rows
+}
+
+func (a *App) helpSize() (width, height, page int) {
+	width = max(1, min(80, a.width-4))
+	if a.width < 12 {
+		width = max(1, a.width)
+	}
+	height = max(1, min(36, a.height-2))
+	if a.height < 6 {
+		height = max(1, a.height)
+	}
+	return width, height, max(1, height-4)
+}
+
+func (a *App) updateHelp(msg tea.Msg) tea.Cmd {
+	key, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return nil
+	}
+	width, _, page := a.helpSize()
+	last := max(0, len(a.helpRows(width))-page)
+	a.helpOffset = min(max(0, a.helpOffset), last)
+	switch key.String() {
+	case "j", "down":
+		a.helpOffset = min(last, a.helpOffset+1)
+	case "k", "up":
+		a.helpOffset = max(0, a.helpOffset-1)
+	case "g", "home":
+		a.helpOffset = 0
+	case "G", "end":
+		a.helpOffset = last
+	case "q":
+		a.mode = AppModeNormal
+	}
+	return nil
+}
+
+func (a *App) actionsHelp() string {
+	if a.width <= 0 || a.height <= 0 {
+		return ""
+	}
+	width, height, page := a.helpSize()
+	rows := a.helpRows(width)
+	start := min(max(0, a.helpOffset), max(0, len(rows)-page))
+	end := min(len(rows), start+page)
+	lines := []string{overlayTitleStyle.Render("Keyboard shortcuts"), ""}
+	lines = append(lines, rows[start:end]...)
+	for len(lines) < page+2 {
+		lines = append(lines, "")
+	}
+	footer := fmt.Sprintf("%d–%d/%d · j/k ↑/↓ scroll · g/G ends · Esc back", start+1, end, len(rows))
+	if width < 55 {
+		footer = fmt.Sprintf("%d–%d/%d · ↑↓ scroll · Esc back", start+1, end, len(rows))
+	}
+	lines = append(lines, "", overlayLabelStyle.Render(ansi.Truncate(footer, width, "…")))
+	// Place centers every line independently unless each already spans the same
+	// width. Pad the complete left-aligned block before the shared modal layout.
+	content := fitScreen(strings.Join(lines, "\n"), width, height)
+	return lipgloss.NewStyle().Width(width).Align(lipgloss.Left).Render(content)
 }
