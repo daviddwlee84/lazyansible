@@ -1,10 +1,10 @@
 # Supported release and upgrade path
 
-**Status:** P2 — deferred until the local UX trial is accepted
+**Status:** Completed 2026-09-25 — v0.1.0 source and binary release
 **Effort:** L
 **Related:** [TODO](../TODO.md), [CONTRIBUTING](../CONTRIBUTING.md), `.goreleaser.yml`
 
-## Current decision
+## Original trial decision
 
 2026-09-23: build and rebuild the local checkout. No release, tag, package-manager
 repository, or self-update command is required to evaluate the experience.
@@ -16,7 +16,7 @@ MIT attribution remains. The inherited Homebrew/Scoop publisher destinations and
 AUR file downloaded or published upstream artifacts; they were removed. The
 manual workflow now builds snapshots with read-only repository permissions.
 
-## Choices to settle later
+## Channels considered
 
 | Channel | Benefit | Required verification |
 | --- | --- | --- |
@@ -35,8 +35,20 @@ Scoop bucket, AUR package, or fleet installer by analogy alone.
 4. Verify source/module/archive boundaries; exclude private local artifacts without removing required fixtures, licenses, or embedded resources.
 5. After authorized publication, update the catalog's public snapshot and evidence. A successful local build is not evidence of a published fork release.
 
-## Resume point
+## Shipped outcome
 
-First collect the local trial feedback. The next decision is supported channels,
-not implementation of a generic updater. Publishing remains a separate explicit
-operation after the artifacts above are reviewable.
+[v0.1.0](https://github.com/daviddwlee84/lazyansible/releases/tag/v0.1.0)
+provides macOS/Linux amd64/arm64 binaries, checksums, Bash/Zsh completions and a
+filtered source archive. Source installs at the fixed tag and `@latest` were
+verified separately from the source/module packaging checks. The native
+Linux/macOS CI and manager ownership/cancellation fixtures passed.
+
+`upgrade --check` inspects the running binary's Homebrew receipt and owning
+manager; apply delegates that exact formula and verifies the effective version.
+Standalone releases keep their external installer path, including chezmoi's
+`just upgrade-personal`. Ansible's own uv upgrades remain separate.
+
+The personal tap centrally verifies releases and publishes formulas. Further
+platforms or a standalone downloader remain separate tasks; no implicit fallback
+or upstream package substitution was introduced. Current instructions:
+[distribution](../docs/distribution.md).

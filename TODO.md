@@ -9,7 +9,6 @@ documented in [README.md](README.md), not this index.
 
 ## P2
 
-- [ ] **[L] Prepare a supported release and upgrade path** — After the local trial, choose supported platforms, publish a fork-owned source/binary release, and verify an existing installation upgrades through its owner. → [research](backlog/release-and-upgrade.md)
 
 ## P3
 
@@ -21,6 +20,8 @@ No additional deferred work selected.
 - [ ] **[?/L] Evaluate partial execution and interactive task debugging** — Compare native step/start-at-task and failure-debugger handoff against an embedded session; establish context, cancellation and terminal-ownership limits before implementation. → [research](backlog/workspace-execution-ux.md#interactive-step-debugging)
 
 ## Done
+
+- ✅ [2026-09-25] [P2/L] Prepare a supported release and upgrade path — Published fork-owned macOS/Linux source and binary release v0.1.0, shell completions, independent packaging validation and verified Homebrew upgrades.
 
 - ✅ [2026-09-23] [P1/L] Keep tag, role and execution views in one workspace — Added persistent context, tag drafts and native tag discovery, related role sources, native scope preview, and shared reviewed execution/result.
 
