@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/daviddwlee84/lazyansible/internal/managedupgrade"
 	"io"
 	"os"
 	"path/filepath"
@@ -115,6 +116,7 @@ func NewRootCommand(options Options) *cobra.Command {
 	pf.BoolVar(&f.checkUpdates, "check-updates", true, "Check for Ansible updates in the background")
 	pf.BoolVar(&f.json, "json", false, "JSON for read operations and dry-run plans; never prompt")
 	root.Flags().BoolVar(&f.initConfig, "init-config", false, "Create preferences without overwriting (alias for config init)")
+	root.AddCommand(managedupgrade.NewCommand(managedupgrade.Product{Binary: "lazyansible", Module: "github.com/daviddwlee84/lazyansible", Main: "github.com/daviddwlee84/lazyansible/cmd/lazyansible"}))
 	root.AddCommand(configCommand(f, options), runtimeCommand(f, options), inspectCommand(f), runCommand(f, options), previewCommand(f), adhocCommand(f, options), roleCommand(f, options))
 	root.AddCommand(&cobra.Command{Use: "version", Short: "Print the build version", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
 		if f.json {

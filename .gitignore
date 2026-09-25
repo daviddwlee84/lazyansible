@@ -7,7 +7,6 @@ bin/
 RELEASE.md
 
 # Optional personal copy of the release helper (tracked copy is scripts/release.sh)
-scripts/
 examples/
 # Local Ansible test environment (not part of the distributed project)
 /ansible/
@@ -26,3 +25,8 @@ vendor/
 # OS
 .DS_Store
 Thumbs.db
+
+# Release artifacts
+/dist/
+/completions/
+__pycache__/

@@ -1,36 +1,32 @@
 version: 2
 project_name: lazyansible
-
-env:
-  - CGO_ENABLED=0
-
+before:
+  hooks:
+    - python3 scripts/release.py completions --project lazyansible --binary lazyansible --main ./cmd/lazyansible
 builds:
   - id: lazyansible
     main: ./cmd/lazyansible
     binary: lazyansible
-    goos: [linux, darwin]
+    env: [CGO_ENABLED=0]
+    goos: [darwin, linux]
     goarch: [amd64, arm64]
+    flags: [-buildvcs=true]
+    mod_timestamp: "{{ .CommitTimestamp }}"
     ldflags:
-      - -s -w
-      - -X github.com/daviddwlee84/lazyansible/internal/buildinfo.Version={{ .Version }}
-      - -X github.com/daviddwlee84/lazyansible/internal/buildinfo.Commit={{ .Commit }}
-      - -X github.com/daviddwlee84/lazyansible/internal/buildinfo.Date={{ .Date }}
-
+      - -s -w -X github.com/daviddwlee84/lazyansible/internal/buildinfo.Version=v{{ .Version }}
 archives:
-  - formats: [tar.gz]
-    files: [README.md, LICENSE, CHANGELOG.md]
-
+  - name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    builds_info:
+      mtime: "{{ .CommitDate }}"
+    files:
+      - src: LICENSE
+      - src: completions/*
 checksum:
   name_template: checksums.txt
-
-snapshot:
-  version_template: "{{ .Tag }}-next"
-
-# Future manual releases target only this fork and start as drafts.
-# The current GitHub workflow invokes `build --snapshot`, never `release`.
 release:
-  github:
-    owner: daviddwlee84
-    name: lazyansible
   draft: true
-  prerelease: auto
+source:
+  enabled: true
+  name_template: "{{ .ProjectName }}_{{ .Version }}_source"
+  format: tar.gz

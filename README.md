@@ -6,9 +6,22 @@ the command, and follow the result in the same terminal.
 This is the permanent personal fork
 [`daviddwlee84/lazyansible`](https://github.com/daviddwlee84/lazyansible), derived
 from [`kocierik/lazyansible`](https://github.com/kocierik/lazyansible) under MIT.
-The current fork changes are an early local trial on macOS and Linux. Build this
-checkout to try them; the upstream Homebrew, Scoop, and AUR packages install the
-upstream project, not these changes.
+The fork publishes its own macOS/Linux source and binary releases. Use the
+personal tap below; upstream Homebrew, Scoop and AUR packages install the upstream
+project and do not contain this fork’s changes.
+
+## Install / 安裝
+
+```sh
+brew install daviddwlee84/tap/lazyansible
+lazyansible --version
+lazyansible upgrade --check
+```
+
+**v0.1.0** adds macOS/Linux amd64/arm64 binary releases and the personal Homebrew
+formula. Go is optional for binary installs; runtime backends remain separate.
+See [installation, completion and owner-aware upgrades](docs/distribution.md).
+[MIT license](LICENSE).
 
 ## Start here / 使用指南
 
@@ -58,8 +71,9 @@ to review; the review initially selects Cancel. Follow the
 and ignored-failure output. It intentionally has no roles or tags.
 
 To update this trial binary, update the checkout and run the same build command.
-There is deliberately no lazyansible self-updater yet. Ansible updates below are
-a separate operation. See the [release follow-up](backlog/release-and-upgrade.md).
+`lazyansible upgrade --check` inspects its Homebrew owner; explicit upgrade
+delegates that formula. Ansible runtime upgrades below remain a separate operation.
+See [distribution](docs/distribution.md).
 
 ## Everyday interaction
 

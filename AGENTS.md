@@ -32,8 +32,7 @@ Report unverified platforms and failing checks honestly.
 ## Working tree and delivery
 
 Preserve unrelated user changes, especially live `.specstory` artifacts. Keep
-private configuration and transcripts out of publication. The initial fork is
-tested from source; update it by updating the checkout and rebuilding. Do not
+private configuration and transcripts out of publication. The fork publishes tested source and binary releases; see docs/distribution.md. Do not
 advertise upstream package-manager channels as installers for this fork.
 
 <!-- project-knowledge-harness:agent-guidance -->
@@ -52,3 +51,9 @@ skill, not an assumed repository `scripts/` directory), then validate its format
 These notes stay in source and are not binary runtime assets. Preserve them when
 work ships, mark their status, and review for private data before publication.
 <!-- project-knowledge-harness:agent-guidance --> (end)
+
+## Binary distribution
+
+See `docs/distribution.md`. Run GoReleaser config/snapshot checks and
+`scripts/check-distribution.py` before tagging. Preserve immutable releases and
+source/module exclusions. Backend setup is separate from installing this CLI.

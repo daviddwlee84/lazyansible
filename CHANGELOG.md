@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+## v0.1.0 - 2026-09-25
+
+- Publish macOS/Linux amd64/arm64 binary archives, checksums and a filtered source archive.
+- Add the personal Homebrew formula channel with generated Bash/Zsh completions.
+- Provide `lazyansible upgrade` and read-only `--check` through verified Homebrew ownership; preserve standalone/local copies and document their external update paths.
+- Verify source/module packaging independently; retain embedded resources and development history outside release payloads.
+
+
 Changes to this permanent personal fork appear under Unreleased. Older version
 sections preserve the upstream project history and are not fork releases.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).

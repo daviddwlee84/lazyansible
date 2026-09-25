@@ -1,0 +1,14 @@
+{
+  "main": "./cmd/lazyansible",
+  "version_symbol": "github.com/daviddwlee84/lazyansible/internal/buildinfo.Version",
+  "required": [
+    "cmd/lazyansible/main.go"
+  ],
+  "smoke": [
+    [
+      "upgrade",
+      "--check",
+      "--json"
+    ]
+  ]
+}
